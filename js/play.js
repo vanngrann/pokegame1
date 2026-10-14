@@ -5,7 +5,7 @@ import {
 } from "./firebase.js";
 import {
   h, requireUser, startTimers, timerBar, toast, store, leaderboardView, teamTotalsView,
-  avatar, teamDot, boardGrid, optionGrid, ordinal, plain,
+  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed,
 } from "./common.js";
 import { TEAMS, WILDCARDS, rankPlayers, smallestTeam, opponentsOf, clampWager } from "./game.js";
 
@@ -231,7 +231,7 @@ function meBar(m) {
   const mine = ranked.find((p) => p.id === m.meId);
   return h("div", { class: "me-bar" },
     avatar(mine),
-    h("span", { class: "name" }, teamMode(m) ? teamDot(mine.team) : null, mine.name, mine.doubleNext ? h("span", { class: "badge" }, "⚔️ ×2") : null),
+    h("span", { class: "name" }, teamMode(m) ? teamDot(mine.team) : null, mine.name, mine.doubleNext ? badge("swords", "", "badge-icon") : null),
     h("span", { class: "muted" }, `${ordinal(mine.rank)} of ${ranked.length}`),
     h("span", { class: "score" }, `${mine.score.toLocaleString()} pts`));
 }
@@ -290,9 +290,9 @@ function questionView(m) {
     meBar(m),
     h("div", { class: "q-meta" },
       h("span", { class: "chip" }, isFinal ? r.final.category : c.category),
-      isFinal ? h("span", { class: "chip chip-accent" }, `Wager: ${wager}`) : h("span", { class: "chip chip-accent" }, `${c.points} pts`),
-      !isFinal && c.pickerUid === m.meId ? h("span", { class: "chip" }, "🎯 Your pick: bonus if right") : null,
-      !isFinal && mine.doubleNext ? h("span", { class: "chip" }, "⚔️ Double points") : null),
+      isFinal ? h("span", { class: "chip chip-accent" }, `Wager ${wager.toLocaleString()}`) : h("span", { class: "chip chip-accent" }, `${c.points} points`),
+      !isFinal && c.pickerUid === m.meId ? badge("target", "Your pick: bonus if right") : null,
+      !isFinal && mine.doubleNext ? badge("swords", "Double points") : null),
     timerBar(deadline, total),
     h("h2", { class: "prompt" }, isFinal ? r.final.prompt : c.prompt),
     optionGrid(isFinal ? r.final.options : c.options, {
@@ -309,16 +309,16 @@ function revealView(m) {
   const res = r.reveal?.results?.[m.meId];
   let result;
   if (!res || res.choice === null) {
-    result = h("div", { class: "result neutral" }, h("div", { class: "result-icon" }, "⏱"), h("h2", null, "No answer this time"),
-      isFinal && res?.gained ? h("p", { class: "gain minus" }, `${res.gained}`) : null);
+    result = h("div", { class: "result neutral" }, h("div", { class: "result-icon" }, icon("clock")), h("h2", null, "No answer this time"),
+      isFinal && res?.gained ? h("p", { class: "gain-big" }, signed(res.gained)) : null);
   } else if (res.correct) {
-    result = h("div", { class: "result good" }, h("div", { class: "result-icon" }, "✓"), h("h2", null, "Correct!"),
-      h("p", { class: "gain-big" }, `+${res.gained}`),
-      !isFinal && r.current?.pickerUid === m.meId ? h("p", { class: "muted small" }, "Includes your picker bonus 🎯") : null,
-      res.doubled ? h("p", { class: "muted small" }, "Doubled by Swords Dance ⚔️") : null);
+    result = h("div", { class: "result good" }, h("div", { class: "result-icon" }, icon("check")), h("h2", null, "Correct"),
+      h("p", { class: "gain-big" }, signed(res.gained)),
+      !isFinal && r.current?.pickerUid === m.meId ? h("p", { class: "result-note" }, "Includes your picker bonus") : null,
+      res.doubled ? h("p", { class: "result-note" }, "Doubled by Swords Dance") : null);
   } else {
-    result = h("div", { class: "result bad" }, h("div", { class: "result-icon" }, "✗"), h("h2", null, "Not quite"),
-      isFinal && res.gained ? h("p", { class: "gain-big minus" }, `${res.gained}`) : null);
+    result = h("div", { class: "result bad" }, h("div", { class: "result-icon" }, icon("cross")), h("h2", null, "Not quite"),
+      isFinal && res.gained ? h("p", { class: "gain-big" }, signed(res.gained)) : null);
   }
   return h("div", { class: "stack" },
     meBar(m),
@@ -337,9 +337,10 @@ function leaderboardScreen(m) {
     h("section", { class: "panel center" },
       h("p", { class: "eyebrow" }, "You’re in"),
       h("p", { class: "big-rank" }, ordinal(mine.rank)),
-      h("p", { class: "muted" }, `${mine.score.toLocaleString()} pts`,
-        gain ? ` (${gain > 0 ? "+" : ""}${gain})` : "",
-        moved > 0 ? ` · up ${moved}` : moved < 0 ? ` · down ${-moved}` : "")),
+      h("p", { class: "muted" }, `${mine.score.toLocaleString()} points`,
+        gain ? ` (${signed(gain)} this round)` : ""),
+      moved ? h("p", { class: `move ${moved > 0 ? "up" : "down"} center` }, icon(moved > 0 ? "up" : "down"),
+        moved > 0 ? `Up ${moved}` : `Down ${-moved}`) : null),
     teamMode(m) ? h("section", { class: "panel" }, teamTotalsView(m.ps, m.r.settings.teamCount)) : null,
     h("section", { class: "panel" }, leaderboardView(m.ps, { me: m.meId, prevRanks: m.r.prevRanks, gains: m.r.gains, limit: 5, compact: true, showTeams: teamMode(m) })));
 }
@@ -357,9 +358,9 @@ function wildView(m) {
       h("div", { class: "target-list" }, opp.map((p) => h("button", {
         class: "btn btn-ghost", type: "button", disabled: !!m.pending,
         onclick: () => sendAction("target", { targetUid: p.id }),
-      }, avatar(p), ` ${p.name} · ${p.score.toLocaleString()} pts`))));
+      }, avatar(p), h("span", { class: "grow" }, p.name), h("span", { class: "muted" }, `${p.score.toLocaleString()} points`)))));
   } else if (mineToAct && w.type === "wheel") {
-    parts.push(h("button", { class: "btn btn-primary btn-lg spin-btn", type: "button", disabled: !!m.pending, onclick: () => sendAction("spin") }, "🎡 Spin!"));
+    parts.push(h("button", { class: "btn btn-primary btn-lg spin-btn", type: "button", disabled: !!m.pending, onclick: () => sendAction("spin") }, icon("wheel"), "Spin the wheel"));
   } else if (w.stage === "choose") {
     parts.push(h("p", { class: "muted" }, `Waiting for ${nameOf(m, w.by)}…`));
   } else if (w.stage === "spinning") {
@@ -367,13 +368,13 @@ function wildView(m) {
   } else if (w.stage === "done") {
     const gain = m.r.gains?.[m.meId] || 0;
     parts.push(h("p", { class: "wild-summary" }, w.summary || ""),
-      gain ? h("p", { class: `gain-big ${gain < 0 ? "minus" : ""}` }, gain > 0 ? `+${gain}` : `−${-gain}`) : null);
+      gain ? h("p", { class: `gain-big center ${gain < 0 ? "minus" : "plus"}` }, signed(gain)) : null);
   }
 
   return h("div", { class: "stack" },
     meBar(m),
     h("div", { class: "wild-card" },
-      h("div", { class: "wild-icon", "aria-hidden": "true" }, def.icon),
+      h("div", { class: "wild-icon" }, icon(def.icon)),
       h("p", { class: "eyebrow" }, w.by === m.meId ? "You found a wildcard!" : `${nameOf(m, w.by)} found a wildcard`),
       h("h2", null, def.name),
       h("p", null, def.text)),
@@ -425,7 +426,8 @@ function podiumView(m) {
   return h("div", { class: "stack" },
     h("section", { class: "panel center" },
       h("p", { class: "eyebrow" }, "Final result"),
-      h("p", { class: "big-rank" }, mine.rank === 1 ? (tied ? "Tied 1st!" : "🏆 1st!") : ordinal(mine.rank)),
+      h("p", { class: "big-rank" }, mine.rank === 1 ? (tied ? "Tied 1st" : "1st") : ordinal(mine.rank)),
+      mine.rank === 1 && !tied ? h("p", { class: "winner-line" }, icon("trophy"), "You won!") : null,
       h("p", { class: "muted" }, `${mine.score.toLocaleString()} pts`)),
     teamMode(m) ? h("section", { class: "panel" }, teamTotalsView(m.ps, m.r.settings.teamCount)) : null,
     h("section", { class: "panel" }, leaderboardView(m.ps, { me: m.meId, limit: 10, compact: true, showTeams: teamMode(m) })));
@@ -450,7 +452,7 @@ function tiebreakView(m) {
   const input = h("input", { class: "input guess-input", type: "number", inputmode: "numeric", placeholder: "Your guess", "aria-label": "Your guess" });
   return h("div", { class: "stack" },
     meBar(m),
-    h("p", { class: "eyebrow center" }, "Tiebreaker · closest guess wins"),
+    h("p", { class: "eyebrow center" }, "Tiebreaker: closest guess wins"),
     timerBar(deadline, total),
     h("h2", { class: "prompt" }, tb.prompt),
     h("form", {
@@ -469,7 +471,7 @@ function tiebreakRevealView(m) {
   return h("div", { class: "stack" }, meBar(m), h("section", { class: "panel center" },
     h("p", { class: "eyebrow" }, "Tiebreaker answer"),
     h("p", { class: "big-rank" }, String(tb.answer)),
-    h("h2", null, tb.winner ? (won ? "🏆 You win the tiebreaker!" : `${nameOf(m, tb.winner)} wins the tiebreaker`) : "Nobody guessed!")));
+    h("h2", null, tb.winner ? (won ? "You win the tiebreaker!" : `${nameOf(m, tb.winner)} wins the tiebreaker`) : "Nobody guessed!")));
 }
 
 const VIEWS = {

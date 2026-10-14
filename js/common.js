@@ -1,6 +1,9 @@
 // Shared helpers for every page: DOM building, sign-in gate, timers, leaderboards.
 import { watchAuth, logOut } from "./firebase.js";
 import { TEAMS, OPTION_SHAPES, rankPlayers, teamTotals } from "./game.js";
+import { icon, cardEmblem } from "./icons.js";
+
+export { icon };
 
 export const $ = (id) => document.getElementById(id);
 
@@ -128,9 +131,23 @@ export function teamOf(id) {
   return TEAMS.find((t) => t.id === id) || null;
 }
 
+// Initials avatars get a steady color from the player's name.
+const AVATAR_COLORS = ["#2f6fd6", "#d6453d", "#13a57a", "#8a4fd8", "#e07a00", "#0f8fa8", "#c2407a", "#5b6b8a"];
+function colorFor(name) {
+  let n = 0;
+  for (const ch of String(name)) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
+  return AVATAR_COLORS[n % AVATAR_COLORS.length];
+}
+
 export function avatar(p, size = "") {
   if (p.photo) return h("img", { class: `avatar ${size}`, alt: "", src: p.photo, referrerpolicy: "no-referrer" });
-  return h("span", { class: `avatar avatar-fallback ${size}` }, (p.name || "?").charAt(0).toUpperCase());
+  return h("span", { class: `avatar avatar-fallback ${size}`, style: { background: colorFor(p.name || "?") } },
+    (p.name || "?").charAt(0).toUpperCase());
+}
+
+/** Small labelled pill with an icon, e.g. badge("bolt", "Fastest"). */
+export function badge(iconName, text, cls = "") {
+  return h("span", { class: `badge ${cls}`.trim() }, icon(iconName), text ? h("span", null, text) : null);
 }
 
 export function teamDot(teamId) {
@@ -157,15 +174,16 @@ export function leaderboardView(players, opts = {}) {
       const gain = opts.gains?.[p.id] || 0;
       const prev = opts.prevRanks?.[p.id];
       const moved = prev ? prev - p.rank : 0;
-      return h("li", { class: p.id === opts.me ? "me" : null },
+      return h("li", { class: [p.id === opts.me ? "me" : "", p.rank <= 3 ? `top top-${p.rank}` : ""].join(" ").trim() || null },
         h("span", { class: "rank" }, p.rank),
         avatar(p),
         h("span", { class: "name" },
           opts.showTeams ? teamDot(p.team) : null,
           p.name || "Trainer",
-          p.doubleNext ? h("span", { class: "badge", title: "Next correct answer scores double" }, "⚔️") : null),
-        moved > 0 ? h("span", { class: "move up" }, `▲${moved}`) : moved < 0 ? h("span", { class: "move down" }, `▼${-moved}`) : null,
-        gain ? h("span", { class: `gain ${gain > 0 ? "plus" : "minus"}` }, gain > 0 ? `+${gain}` : `${gain}`) : null,
+          p.doubleNext ? badge("swords", "", "badge-icon") : null),
+        moved > 0 ? h("span", { class: "move up", title: `Up ${moved}` }, icon("up"), moved)
+          : moved < 0 ? h("span", { class: "move down", title: `Down ${-moved}` }, icon("down"), -moved) : null,
+        gain ? h("span", { class: `gain ${gain > 0 ? "plus" : "minus"}` }, signed(gain)) : null,
         h("span", { class: "score" }, (p.score || 0).toLocaleString()));
     }));
 }
@@ -195,12 +213,17 @@ export function boardGrid(categories, board, onPick, opts = {}) {
     for (let col = 0; col < cols; col++) {
       const cell = board.find((c) => c.col === col && c.row === row);
       if (!cell) grid.append(h("div", { class: "board-cell empty" }));
-      else if (cell.used) grid.append(h("div", { class: "board-cell used" }, cell.label || ""));
-      else grid.append(h("button", {
-        class: "board-cell", type: "button", disabled: !onPick,
-        "aria-label": `${categories[col]}, card ${row + 1}`,
-        onclick: onPick ? () => onPick(cell.id) : null,
-      }, "?"));
+      else if (cell.used) {
+        const isPoints = /^\d+$/.test(cell.label || "");
+        grid.append(h("div", { class: `board-cell used${isPoints ? "" : " used-wild"}` },
+          isPoints ? h("span", { class: "used-points" }, cell.label) : cell.label ? icon(cell.label) : null));
+      } else {
+        grid.append(h("button", {
+          class: "board-cell", type: "button", disabled: !onPick,
+          "aria-label": `${categories[col]}, card ${row + 1}`,
+          onclick: onPick ? () => onPick(cell.id) : null,
+        }, h("span", { class: "card-frame" }, cardEmblem())));
+      }
     }
   }
   return grid;
@@ -219,15 +242,20 @@ export function optionGrid(options, opts = {}) {
       if (opts.chosen === i) cls.push("chosen");
       if (opts.chosen != null && opts.chosen !== i && !revealed) cls.push("dim");
       const inner = [
-        h("span", { class: "shape", "aria-hidden": "true" }, OPTION_SHAPES[i]),
+        h("span", { class: "shape" }, icon(OPTION_SHAPES[i])),
         h("span", { class: "answer-text" }, text),
         revealed && opts.counts ? h("span", { class: "answer-count", title: "Players who chose this" }, String(opts.counts[i] || 0)) : null,
-        revealed && i === opts.correctIndex ? h("span", { class: "tick", "aria-label": "Correct answer" }, "✓") : null,
+        revealed && i === opts.correctIndex ? h("span", { class: "tick", title: "Correct answer" }, icon("check")) : null,
       ];
       return opts.onPick
         ? h("button", { class: cls.join(" "), type: "button", onclick: () => opts.onPick(i) }, inner)
         : h("div", { class: cls.join(" ") }, inner);
     }));
+}
+
+/** +120 / −80 with a real minus sign. */
+export function signed(n) {
+  return n > 0 ? `+${n.toLocaleString()}` : n < 0 ? `\u2212${(-n).toLocaleString()}` : "0";
 }
 
 export function ordinal(n) {

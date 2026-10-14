@@ -7,7 +7,7 @@ import {
 } from "./firebase.js";
 import {
   h, requireUser, startTimers, timerBar, toast, leaderboardView, teamTotalsView,
-  avatar, boardGrid, optionGrid, ordinal, plain,
+  avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed,
 } from "./common.js";
 import { BANK } from "./questions.js";
 import {
@@ -535,6 +535,13 @@ function fatal(message) {
     h("h2", null, "Hmm…"), h("p", null, message), h("a", { class: "btn btn-primary", href: "index.html" }, "Back to start")));
 }
 
+/** The small "flipped card" that shows a question's value. */
+function valueCard(category, value, still = false) {
+  return h("div", { class: `value-card${still ? " still" : ""}`, "aria-label": `${category}, ${value} points` },
+    h("span", { class: `value-num${typeof value === "number" ? "" : " value-word"}` }, String(value)),
+    typeof value === "number" ? h("span", { class: "value-unit" }, "points") : null);
+}
+
 const btn = (label, onclick, cls = "btn-primary") => h("button", { class: `btn ${cls} btn-inline`, type: "button", onclick }, label);
 
 function endGameButton() {
@@ -575,7 +582,7 @@ function lobbyView(r, ps) {
     h("button", {
       class: "btn-link kick", type: "button", title: `Remove ${p.name}`,
       onclick: () => { if (confirm(`Remove ${p.name} from the room?`)) deleteDoc(playerRef(p.id)); },
-    }, "✕"));
+    }, icon("cross")));
 
   let roster;
   if (s.mode === "teams") {
@@ -592,13 +599,13 @@ function lobbyView(r, ps) {
 
   return h("div", { class: "lobby" },
     h("section", { class: "panel join-card center" },
-      h("p", { class: "eyebrow" }, "Join on your phone"),
+      h("h2", null, "Join on your phone"),
       h("p", { class: "join-url" }, siteUrl),
-      h("p", { class: "room-code", "aria-label": `Room code ${code.split("").join(" ")}` }, code),
+      h("p", { class: "room-code", "aria-label": `Room code ${code.split("").join(" ")}` }, code.split("").map((ch) => h("span", null, ch))),
       h("img", { class: "qr", src: qr, alt: "QR code to join", width: "240", height: "240", onerror: (e) => { e.target.hidden = true; } })),
     h("div", { class: "lobby-side" },
       h("section", { class: "panel" },
-        h("h3", null, `Players (${ps.length})`),
+        h("h3", null, icon("users"), `Players (${ps.length})`),
         ps.length ? roster : h("p", { class: "muted" }, "Waiting for players to join…"),
         h("button", { class: "btn btn-primary btn-lg", type: "button", disabled: !ps.length, onclick: () => transition(startGame) }, "Start game")),
       settings));
@@ -624,10 +631,11 @@ function questionView(r, ps) {
   const deadline = (c.startedAt || Date.now()) + total;
   const picker = ps.find((p) => p.id === c.pickerUid);
   return h("div", { class: "question-screen" },
-    h("div", { class: "q-meta" },
-      h("span", { class: "chip" }, isFinal ? `Final round · ${r.final.category}` : c.category),
-      isFinal ? h("span", { class: "chip chip-accent" }, "Wagers on the line") : h("span", { class: "chip chip-accent" }, `${c.points} pts`),
-      picker ? h("span", { class: "chip" }, `Picked by ${picker.name}`) : null,
+    h("div", { class: "q-head" },
+      valueCard(isFinal ? "Final round" : c.category, isFinal ? "Final" : c.points),
+      h("div", { class: "q-head-text" },
+        h("p", { class: "q-category" }, isFinal ? r.final.category : c.category),
+        picker ? h("p", { class: "muted" }, `Picked by ${picker.name}`) : isFinal ? h("p", { class: "muted" }, "Everyone’s wager is on the line") : null),
       h("span", { class: "countdown big-count", dataset: { deadline: String(deadline), total: String(total) } })),
     timerBar(deadline, total),
     c.note ? h("p", { class: "muted small center" }, c.note) : null,
@@ -652,9 +660,9 @@ function revealView(r, ps) {
       [...ps].sort((a, b) => (results[b.id]?.gained || 0) - (results[a.id]?.gained || 0)).map((p) => {
         const res = results[p.id] || { wager: 0, gained: 0, correct: false };
         return h("li", null, avatar(p), h("span", { class: "name" }, p.name),
-          h("span", { class: "muted small" }, `wagered ${res.wager}`),
-          h("span", { class: `gain ${res.gained > 0 ? "plus" : res.gained < 0 ? "minus" : ""}` },
-            res.correct ? `✓ +${res.gained}` : res.gained ? `✗ ${res.gained}` : "✗ 0"));
+          h("span", { class: "muted small" }, `Wagered ${res.wager.toLocaleString()}`),
+          res.correct ? badge("check", "Right", "badge-good") : badge("cross", "Wrong", "badge-bad"),
+          h("span", { class: `gain ${res.gained > 0 ? "plus" : res.gained < 0 ? "minus" : ""}` }, signed(res.gained)));
       }));
   } else {
     const right = ps.filter((p) => results[p.id]?.correct).sort((a, b) => results[b.id].gained - results[a.id].gained);
@@ -663,16 +671,18 @@ function revealView(r, ps) {
       h("p", { class: "center muted" }, `${right.length} of ${answered || 0} answers were correct`),
       right.length ? h("ul", { class: "result-list" }, right.map((p, i) => h("li", null,
         avatar(p), h("span", { class: "name" }, p.name),
-        i === 0 ? h("span", { class: "badge" }, "⚡ fastest") : null,
-        p.id === c.pickerUid ? h("span", { class: "badge" }, "🎯 picker bonus") : null,
-        results[p.id].doubled ? h("span", { class: "badge" }, "⚔️ ×2") : null,
+        i === 0 ? badge("bolt", "Fastest") : null,
+        p.id === c.pickerUid ? badge("target", "Picker bonus") : null,
+        results[p.id].doubled ? badge("swords", "Doubled") : null,
         h("span", { class: "gain plus" }, `+${results[p.id].gained}`)))) : null);
   }
 
-  return h("div", { class: "question-screen" },
-    h("div", { class: "q-meta" },
-      h("span", { class: "chip" }, isFinal ? `Final round · ${r.final.category}` : c.category),
-      !isFinal ? h("span", { class: "chip chip-accent" }, `${c.points} pts`) : null),
+  return h("div", { class: "question-screen reveal-screen" },
+    h("div", { class: "q-head" },
+      valueCard(isFinal ? "Final round" : c.category, isFinal ? "Final" : c.points, true),
+      h("div", { class: "q-head-text" },
+        h("p", { class: "q-category" }, isFinal ? r.final.category : c.category),
+        h("p", { class: "muted" }, "Answer revealed"))),
     h("h2", { class: "prompt" }, isFinal ? r.final.prompt : c.prompt),
     optionGrid(options, { correctIndex: rv.correctIndex, counts: rv.counts }),
     h("section", { class: "panel" }, detail),
@@ -697,7 +707,7 @@ function leaderboardScreen(r, ps) {
 function wheelView(w) {
   const n = WHEEL.length;
   const slice = 360 / n;
-  const colors = ["#003e7e", "#ffd200", "#2f6fd6", "#d6453d", "#1e9e5a", "#ffd200", "#7b3fb8", "#e07a00"];
+  const colors = ["#003e7e", "#ffd200", "#2f6fd6", "#e5484d", "#13a57a", "#ffd200", "#8a4fd8", "#f08a24"];
   const svgNS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("viewBox", "-102 -102 204 204");
@@ -708,8 +718,8 @@ function wheelView(w) {
     const path = document.createElementNS(svgNS, "path");
     path.setAttribute("d", `M0 0 L${100 * Math.cos(a0)} ${100 * Math.sin(a0)} A100 100 0 0 1 ${100 * Math.cos(a1)} ${100 * Math.sin(a1)} Z`);
     path.setAttribute("fill", colors[i % colors.length]);
-    path.setAttribute("stroke", "#fff");
-    path.setAttribute("stroke-width", "1.5");
+    path.setAttribute("stroke", "#002a57");
+    path.setAttribute("stroke-width", "2");
     svg.append(path);
     const text = document.createElementNS(svgNS, "text");
     const mid = (i + 0.5) * slice - 90;
@@ -718,16 +728,16 @@ function wheelView(w) {
     text.setAttribute("transform", `rotate(${mid}) translate(60 0)${flip}`);
     text.setAttribute("text-anchor", "middle");
     text.setAttribute("dominant-baseline", "middle");
-    text.setAttribute("font-size", "11");
-    text.setAttribute("font-weight", "700");
+    text.setAttribute("font-size", "12");
+    text.setAttribute("font-weight", "800");
     text.setAttribute("fill", colors[i % colors.length] === "#ffd200" ? "#003e7e" : "#ffffff");
     text.textContent = s.short;
     svg.append(text);
   });
   const hub = document.createElementNS(svgNS, "circle");
   hub.setAttribute("r", "12");
-  hub.setAttribute("fill", "#ffffff");
-  hub.setAttribute("stroke", "#003e7e");
+  hub.setAttribute("fill", "#002a57");
+  hub.setAttribute("stroke", "#ffd200");
   hub.setAttribute("stroke-width", "3");
   svg.append(hub);
 
@@ -759,7 +769,7 @@ function wildView(r, ps) {
       h("div", { class: "target-list" }, opp.map((p) => h("button", {
         class: "btn btn-ghost btn-inline", type: "button",
         onclick: () => transition(() => finishWild({ target: p.id })),
-      }, `${p.name} · ${p.score}`))));
+      }, avatar(p), h("span", null, p.name), h("span", { class: "muted" }, p.score.toLocaleString())))));
     if (!opp.length) parts.push(btn("Continue", () => transition(() => finishWild({}))));
   }
   if (w.stage === "choose" && w.type === "wheel") {
@@ -775,8 +785,8 @@ function wildView(r, ps) {
   return h("div", { class: "wild-screen center" },
     h("div", { class: "wild-row" },
       h("div", { class: "wild-card" },
-        h("div", { class: "wild-icon", "aria-hidden": "true" }, def.icon),
-        h("p", { class: "eyebrow" }, "Wildcard!"),
+        h("div", { class: "wild-icon" }, icon(def.icon)),
+        h("p", { class: "eyebrow" }, "Wildcard"),
         h("h2", null, def.name),
         h("p", null, def.text),
         by ? h("p", { class: "muted small" }, `Found by ${by.name}`) : null),
@@ -822,7 +832,7 @@ function tiebreakView(r, ps) {
   const total = (tb.seconds || TIEBREAK_SECONDS) * 1000;
   const deadline = (tb.startedAt || Date.now()) + total;
   return h("div", { class: "question-screen center" },
-    h("p", { class: "eyebrow" }, "Tiebreaker · closest guess wins"),
+    h("p", { class: "eyebrow" }, "Tiebreaker: closest guess wins"),
     h("span", { class: "countdown big-count", dataset: { deadline: String(deadline), total: String(total) } }),
     timerBar(deadline, total),
     h("h2", { class: "prompt" }, tb.prompt),
@@ -841,7 +851,7 @@ function tiebreakRevealView(r, ps) {
       return h("li", { class: id === tb.winner ? "me" : null },
         h("span", { class: "name" }, nameOf(ps, id)),
         h("span", null, v == null ? "no guess" : `guessed ${v} (off by ${Math.abs(v - tb.answer)})`),
-        id === tb.winner ? h("span", { class: "badge" }, "🏆 winner") : null);
+        id === tb.winner ? badge("trophy", "Winner", "badge-gold") : null);
     })),
     h("div", { class: "host-footer" }, h("span"), btn("Final standings", () => transition(next))));
 }

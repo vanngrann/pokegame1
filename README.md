@@ -19,13 +19,13 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
 
    | Wildcard | Effect |
    |---|---|
-   |  Thief | Steal 200 points from a player you choose |
-   |  Spin the Wheel | Random outcome: +100, +300, +500, −200, everyone +100, rob the leader, Swords Dance, or swap scores with last place |
-   |  Swords Dance | Your next correct answer scores double |
-   |  Transform | Swap scores with a random opponent |
-   |  Rare Candy | Free +300 |
-   |  Pay Day | Everyone gets +100 |
-   |  Earthquake | Every opponent loses 100 |
+   | Thief | Steal 200 points from a player you choose |
+   | Spin the Wheel | Random outcome: +100, +300, +500, −200, everyone +100, rob the leader, Swords Dance, or swap scores with last place |
+   | Swords Dance | Your next correct answer scores double |
+   | Transform | Swap scores with a random opponent |
+   | Rare Candy | Free +300 |
+   | Pay Day | Everyone gets +100 |
+   | Earthquake | Every opponent loses 100 |
 
    Scores never drop below 0. In team mode, "opponents" means players on other teams.
 8. When the board is cleared, the **final round** starts. Everyone sees the category, secretly wagers part of their score, then answers. Right wins the wager; wrong loses it.
@@ -41,7 +41,7 @@ trainer-trivia/
 ├── host.html             the shared big screen
 ├── play.html             the phone screen
 ├── css/
-│   └── styles.css        all styling (navy + yellow theme, light/dark)
+│   └── styles.css        all styling: colors, fonts and sizes are set at the top
 ├── js/
 │   ├── questions.js      THE QUESTION BANK: edit this to change questions
 │   ├── game.js           rules: scoring, bonuses, wildcards, the wheel
@@ -49,6 +49,7 @@ trainer-trivia/
 │   ├── play.js           the phone screen
 │   ├── index.js          the start page
 │   ├── common.js         shared helpers (leaderboards, board, timers)
+│   ├── icons.js          the SVG icons (wildcards, answer shapes, badges)
 │   ├── firebase.js       Firebase connection
 │   └── firebase-config.js  your Firebase keys
 ├── firestore.rules       database security rules (paste into Firebase)
@@ -78,6 +79,12 @@ Push the folder to a GitHub repo (with `index.html` at the root), then Settings 
 - **Scoring:** change `SPEED_BONUS`, `PICKER_BONUS`, `POINT_VALUES`, `STEAL_AMOUNT` and the timer lengths at the top of `js/game.js`.
 - **Wildcards and the wheel:** edit `WILDCARDS` and `WHEEL` in `js/game.js`. A new wildcard type also needs a `case` in `resolveWild()`.
 - **Teams:** names and colors are in `TEAMS` in `js/game.js`.
+
+## Look and feel
+
+- The host screen always uses the dark navy "stage" so it reads well on a TV. Phones follow the device's light or dark setting.
+- Fonts are Bricolage Grotesque (headings, numbers, room codes) and Figtree (everything else), loaded from Google Fonts.
+- Brand colors, answer-tile colors and corner sizes are tokens at the top of `css/styles.css`.
 
 ## Good to know
 

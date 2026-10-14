@@ -25,18 +25,18 @@ export const TEAMS = [
 ];
 
 // The four answer buttons (Kahoot-style shape + color).
-export const OPTION_SHAPES = ["▲", "◆", "●", "■"];
+export const OPTION_SHAPES = ["shape0", "shape1", "shape2", "shape3"]; // icon names, see icons.js
 
 // ---------- Wildcards ----------
 // `needs` = the picker has to do something before it resolves.
 export const WILDCARDS = {
-  thief:     { name: "Thief",          icon: "🦹", text: `Steal ${STEAL_AMOUNT} points from a player of your choice.`, needs: "target" },
-  wheel:     { name: "Spin the Wheel", icon: "🎡", text: "Spin for a random prize… or a penalty!", needs: "spin" },
-  swords:    { name: "Swords Dance",   icon: "⚔️", text: "Your next correct answer scores double." },
-  transform: { name: "Transform",      icon: "🔀", text: "Swap scores with a random opponent!" },
-  candy:     { name: "Rare Candy",     icon: "🍬", text: "Free +300 points." },
-  payday:    { name: "Pay Day",        icon: "🪙", text: "Everyone gets +100." },
-  quake:     { name: "Earthquake",     icon: "🌋", text: "Every opponent loses 100." },
+  thief:     { name: "Thief",          icon: "thief", text: `Steal ${STEAL_AMOUNT} points from a player of your choice.`, needs: "target" },
+  wheel:     { name: "Spin the Wheel", icon: "wheel", text: "Spin for a random prize, or a penalty.", needs: "spin" },
+  swords:    { name: "Swords Dance",   icon: "swords", text: "Your next correct answer scores double." },
+  transform: { name: "Transform",      icon: "transform", text: "Swap scores with a random opponent!" },
+  candy:     { name: "Rare Candy",     icon: "candy", text: "Free +300 points." },
+  payday:    { name: "Pay Day",        icon: "payday", text: "Everyone gets +100." },
+  quake:     { name: "Earthquake",     icon: "quake", text: "Every opponent loses 100." },
 };
 
 export const WHEEL = [
@@ -46,7 +46,7 @@ export const WHEEL = [
   { short: "All +100",   label: "Everyone gets +100",        kind: "all", value: 100 },
   { short: "+500",       label: "+500 points",               kind: "self", value: 500 },
   { short: "Rob leader", label: "Steal 300 from the leader", kind: "stealLeader", value: 300 },
-  { short: "⚔️ ×2",      label: "Swords Dance",              kind: "swords" },
+  { short: "Double",     label: "Swords Dance",              kind: "swords" },
   { short: "Swap last",  label: "Swap scores with last place", kind: "swapLast" },
 ];
 
@@ -241,6 +241,7 @@ export function resolveWild(type, ctx) {
       summary = "Nothing happened.";
   }
 
-  if (effect) summary = `🎡 ${effect.label}! ${summary}`;
+  // Wheel outcomes that can fall back to a consolation prize say what they landed on first.
+  if (effect && (effect.kind === "stealLeader" || effect.kind === "swapLast")) summary = `${effect.label}! ${summary}`;
   return { deltas, flags, summary };
 }
