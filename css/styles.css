@@ -492,7 +492,9 @@ button.board-cell:disabled { cursor: default; }
 }
 .board-cell.used::after { display: none; }
 .used-points { font: 800 clamp(1.1rem, 2.4vw, 2rem)/1 var(--font-display); opacity: 0.7; }
-.board-cell.used-wild .icon { width: 34%; height: 34%; color: var(--yellow); opacity: 0.6; }
+.board-cell.used { gap: 2px; grid-auto-flow: row; align-content: center; }
+.board-cell.used-wild .icon { width: auto; height: min(30%, 26px); color: var(--yellow); opacity: 0.7; }
+.board.compact .board-cell.used-wild .icon { height: min(30%, 14px); }
 .board-cell.empty { visibility: hidden; }
 
 /* Phones: compact board */
@@ -999,6 +1001,8 @@ body.player .stack > .target-list { flex: 1 1 auto; min-height: 0; overflow-y: a
 body.player .spin-btn { min-height: clamp(60px, 10dvh, 84px); }
 
 /* ----- Start page ----- */
+.rejoin { border: 2px solid var(--yellow); }
+#screen-hub:has(#rejoin:not(:empty)) .hero { display: none; } /* make room for the rejoin card */
 body:not(.host):not(.player) .hero { padding-top: clamp(4px, 2dvh, 18px); }
 body:not(.host):not(.player) .hero h1 { font-size: clamp(2.2rem, min(11vw, 7dvh), 3.6rem); }
 @media (max-height: 680px) {

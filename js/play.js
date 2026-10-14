@@ -1,15 +1,18 @@
 // Player screen (phones). Shows what's happening and sends picks and answers.
 // The host's browser does all the scoring, so nothing here decides points.
 import {
-  db, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, collection, onSnapshot, serverTimestamp,
+  db, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, collection, onSnapshot, serverTimestamp, reconnect,
 } from "./firebase.js";
 import {
   h, requireUser, startTimers, timerBar, toast, store, leaderboardView, teamTotalsView,
-  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
+  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass, stayConnected, loadWatchdog,
 } from "./common.js";
 import { TEAMS, WILDCARDS, FINAL_MIN_WAGER, rankPlayers, smallestTeam, opponentsOf, clampWager, maxWager } from "./game.js";
 
 const app = document.getElementById("app");
+
+// If the page hasn't shown anything useful after a few seconds, reconnect, then reload.
+const loaded = loadWatchdog();
 
 // Stop drawing (and, on the host, stop running the game) if another tab switches accounts.
 let frozen = false;
@@ -52,6 +55,7 @@ requireUser(async (user) => {
 });
 
 function askForCode() {
+  loaded();
   const input = h("input", { class: "input code-input", maxlength: "4", placeholder: "ABCD", autocapitalize: "characters", "aria-label": "Room code" });
   input.addEventListener("input", () => { input.value = input.value.toUpperCase().replace(/[^A-Z]/g, ""); });
   app.replaceChildren(h("form", {
@@ -62,6 +66,7 @@ function askForCode() {
 }
 
 function message(title, text, withHome) {
+  loaded();
   lastKey = "";
   app.replaceChildren(h("div", { class: "panel center" },
     h("h2", null, title), h("p", { class: "muted" }, text),
@@ -69,6 +74,7 @@ function message(title, text, withHome) {
 }
 
 function showJoinForm(r) {
+  loaded();
   lastKey = "";
   const suggested = store.get("tt-name", "") || (me.isAnonymous ? "" : (me.displayName || "").split(" ")[0]);
   const input = h("input", { class: "input", maxlength: "20", value: suggested, placeholder: "Your name", autocomplete: "nickname", "aria-label": "Your name", required: true });
@@ -112,7 +118,11 @@ async function join(name) {
 }
 
 function subscribe() {
+  // Remember this game so the start page can offer "Rejoin" if the player leaves.
+  store.set("tt-last-room", { code, at: Date.now() });
+
   onSnapshot(roomRef, (snap) => {
+    loaded();
     if (!snap.exists()) return message("The game has ended", "The host closed this room.", true);
     const before = stageKey(room);
     room = snap.data({ serverTimestamps: "estimate" });
@@ -127,6 +137,23 @@ function subscribe() {
   });
 
   startTimers();
+
+  // Coming back to the tab or regaining signal: reconnect and redraw instead of needing a refresh.
+  stayConnected(() => { lastKey = ""; render(true); });
+
+  // If a question is still showing well after its time ran out, the live connection is
+  // probably stuck. Reconnect once for that question.
+  let nudged = null;
+  setInterval(() => {
+    if (!room || !["question", "final-question", "tiebreak"].includes(room.status)) return;
+    const r = activeRound(plain(room));
+    const seen = local.seen[r];
+    const secs = room.status === "tiebreak" ? room.tiebreak?.seconds || 30 : room.current?.seconds || 20;
+    if (seen && nudged !== r && Date.now() > seen + secs * 1000 + 8000) {
+      nudged = r;
+      reconnect();
+    }
+  }, 3000);
 }
 
 const stageKey = (r) => (r ? [r.status, r.current?.round, r.wild?.stage, r.pickerUid].join("|") : "");
@@ -385,6 +412,7 @@ function wildView(m) {
   } else if (w.stage === "done") {
     const gain = m.r.gains?.[m.meId] || 0;
     parts.push(h("p", { class: "wild-summary" }, w.summary || ""),
+      h("p", { class: "muted center small" }, "This card’s question is up next."),
       gain ? h("p", { class: `gain-big center ${gain < 0 ? "minus" : "plus"}` }, signed(gain)) : null);
   }
 

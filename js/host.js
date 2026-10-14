@@ -8,6 +8,7 @@ import {
 import {
   h, requireUser, startTimers, timerBar, toast, leaderboardView, teamTotalsView,
   avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
+  store, stayConnected, loadWatchdog,
 } from "./common.js";
 import { BANK } from "./questions.js";
 import {
@@ -17,6 +18,9 @@ import {
 } from "./game.js";
 
 const app = document.getElementById("app");
+
+// If nothing loads after a few seconds, reconnect, then reload.
+const loaded = loadWatchdog();
 
 // Stop drawing (and, on the host, stop running the game) if another tab switches accounts.
 let frozen = false;
@@ -48,15 +52,23 @@ const teamMode = () => room?.settings?.mode === "teams";
 requireUser(async (user) => {
   me = user;
   try {
-    code = (new URLSearchParams(location.search).get("room") || "").toUpperCase();
+    const params = new URLSearchParams(location.search);
+    code = (params.get("room") || "").toUpperCase();
+    // Opening host.html again (without ?new) returns to the room you were running,
+    // unless that game already finished.
+    const remembered = store.get("tt-host-room", null);
+    if (!code && !params.has("new") && remembered?.code) code = remembered.code;
     if (code) {
       const snap = await getDoc(doc(db, "rooms", code));
-      if (!snap.exists() || snap.data().hostUid !== me.uid) code = "";
+      const ok = snap.exists() && snap.data().hostUid === me.uid;
+      const finished = ok && snap.data().status === "podium" && !params.get("room");
+      if (!ok || finished) code = "";
     }
     if (!code) {
       code = await createRoom();
-      history.replaceState(null, "", `?room=${code}`);
     }
+    history.replaceState(null, "", `?room=${code}`);
+    store.set("tt-host-room", { code, at: Date.now() });
     roomRef = doc(db, "rooms", code);
     privRef = doc(db, "rooms", code, "private", "host");
     const priv = await getDoc(privRef);
@@ -80,7 +92,24 @@ async function createRoom() {
 }
 
 function subscribe() {
+  // Back on screen or back online: reconnect, then catch up on anything overdue
+  // (a question whose time ran out while this tab was hidden closes right away).
+  stayConnected(() => {
+    if (!room) return;
+    scheduleAutoClose();
+    resumeSpin();
+    checkAllAnswered();
+    lastKey = "";
+    render();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && room && !["lobby", "podium"].includes(room.status)) {
+      toast("Keep this tab on screen while playing. It runs the game’s timers.");
+    }
+  });
+
   onSnapshot(roomRef, (snap) => {
+    loaded();
     if (!snap.exists()) return fatal("This room was deleted.");
     room = snap.data({ serverTimestamps: "estimate" });
     syncAnswers();
@@ -241,14 +270,16 @@ function rankMap() {
 }
 
 /** Applies score changes + flags to players and updates the room in one batch. */
-async function applyDeltas({ deltas = {}, flags = {} }, roomFields) {
+async function applyDeltas({ deltas = {}, flags = {} }, roomFields, { accumulate = false } = {}) {
   const batch = writeBatch(db);
-  const prevRanks = rankMap();
-  const gains = {};
+  // When a question follows a wildcard, keep the ranks from the start of the turn
+  // and add this step's gains to the wildcard's, so the leaderboard shows the whole turn.
+  const prevRanks = accumulate && room.prevRanks ? room.prevRanks : rankMap();
+  const gains = accumulate ? { ...(room.gains || {}) } : {};
   for (const [uid, d] of Object.entries(deltas)) {
     if (!d || !players.has(uid)) continue;
     batch.update(playerRef(uid), { score: increment(d) });
-    gains[uid] = d;
+    gains[uid] = (gains[uid] || 0) + d;
   }
   for (const [uid, f] of Object.entries(flags)) {
     if (players.has(uid)) batch.update(playerRef(uid), f);
@@ -314,36 +345,47 @@ async function pickCell(cellId) {
   if (!cell) return toast("This board’s hidden answers are missing. End the game and start a new one.");
 
   const by = currentPicker();
-  const label = cell.kind === "q" ? String(cell.points) : WILDCARDS[cell.wild].icon;
-  const board = room.board.map((c) => (c.id === cellId ? { ...c, used: true, label } : c));
+  const wildType = cell.wild || null;
+  const board = room.board.map((c) => (c.id === cellId
+    ? { ...c, used: true, label: String(cell.points), icon: wildType ? WILDCARDS[wildType].icon : null }
+    : c));
 
-  if (cell.kind === "q") {
-    const cat = BANK.categories[cell.col];
-    const q = cat.questions[cell.qIndex];
-    const { options, correctIndex } = optionsFor(q);
-    const qCount = (room.qCount || 0) + 1;
-    const round = `g${room.game}q${qCount}`;
-    secret.current = { round, correctIndex, answer: q.answer };
-    await saveSecret();
-    await updateDoc(roomRef, {
-      status: "question", board, qCount, pickerUid: by, reveal: null, wild: null,
-      current: {
-        round, cellId, category: cat.name, note: cat.note || null, points: cell.points,
-        prompt: q.prompt, options, pickerUid: by, seconds: room.settings.seconds || 20,
-        startedAt: serverTimestamp(),
-      },
-    });
-    return;
-  }
+  // No wildcard: straight to the question.
+  if (!wildType) return startQuestion(cellId, by, { board, turnGains: false });
 
-  const def = WILDCARDS[cell.wild];
-  const wild = { type: cell.wild, by, cellId, stage: def.needs ? "choose" : "done", summary: null, wheelIndex: null, spinAt: null };
+  // Wildcard first, then the card's question.
+  const def = WILDCARDS[wildType];
+  const wild = { type: wildType, by, cellId, stage: def.needs ? "choose" : "done", summary: null, wheelIndex: null, spinAt: null };
   if (def.needs) {
-    await updateDoc(roomRef, { status: "wild", board, pickerUid: by, wild, current: null, reveal: null });
+    await updateDoc(roomRef, { status: "wild", board, pickerUid: by, wild, current: null, reveal: null, gains: {}, prevRanks: rankMap() });
   } else {
-    const res = resolveWild(cell.wild, wildContext(by));
+    const res = resolveWild(wildType, wildContext(by));
     await applyDeltas(res, { status: "wild", board, pickerUid: by, wild: { ...wild, summary: res.summary }, current: null, reveal: null });
   }
+}
+
+/**
+ * Shows the question on a card. When it follows a wildcard, the leaderboard
+ * afterwards shows the whole turn (wildcard + question) together.
+ */
+async function startQuestion(cellId, by, { board, turnGains }) {
+  const cell = secret.cells[cellId];
+  const cat = BANK.categories[cell.col];
+  const q = cat.questions[cell.qIndex];
+  const { options, correctIndex } = optionsFor(q);
+  const qCount = (room.qCount || 0) + 1;
+  const round = `g${room.game}q${qCount}`;
+  secret.current = { round, correctIndex, answer: q.answer };
+  await saveSecret();
+  await updateDoc(roomRef, {
+    status: "question", ...(board ? { board } : {}), qCount, pickerUid: by, reveal: null,
+    ...(turnGains ? {} : { wild: null }),
+    current: {
+      round, cellId, category: cat.name, note: cat.note || null, points: cell.points,
+      prompt: q.prompt, options, pickerUid: by, seconds: room.settings.seconds || 20,
+      afterWild: !!turnGains, startedAt: serverTimestamp(),
+    },
+  });
 }
 
 async function closeQuestion() {
@@ -378,7 +420,7 @@ async function closeQuestion() {
   await applyDeltas({ deltas, flags }, {
     status: "reveal",
     reveal: { correctIndex, answer: secret.current.answer, counts, results },
-  });
+  }, { accumulate: !!c.afterWild });
 }
 
 async function spinWheel() {
@@ -420,7 +462,7 @@ async function next() {
       return updateDoc(roomRef, { status: "leaderboard" });
     case "wild":
       if (room.wild?.stage !== "done") return;
-      return updateDoc(roomRef, { status: "leaderboard" });
+      return startQuestion(room.wild.cellId, room.wild.by, { turnGains: true });
     case "leaderboard": {
       if ((room.board || []).every((c) => c.used)) return startFinal();
       const t = nextTurn();
@@ -536,6 +578,7 @@ function render() {
 }
 
 function fatal(message) {
+  loaded();
   lastKey = "";
   app.replaceChildren(h("div", { class: "panel center narrow" },
     h("h2", null, "Hmm…"), h("p", null, message), h("a", { class: "btn btn-primary", href: "index.html" }, "Back to start")));
@@ -562,9 +605,9 @@ function nameOf(ps, id) {
 }
 
 function wildHint(n, total) {
-  if (n === 0) return `No wildcards: all ${total} cards are questions.`;
-  if (n >= total) return `Every card is a wildcard. Pure chaos, no questions.`;
-  return `${n} wildcard${n === 1 ? "" : "s"} and ${total - n} question${total - n === 1 ? "" : "s"}.`;
+  if (n === 0) return `No wildcards. All ${total} cards are plain questions.`;
+  if (n >= total) return `Every card has a wildcard, followed by its question.`;
+  return `${n} of the ${total} cards play a wildcard first, then their question.`;
 }
 
 // ----- Lobby -----
@@ -828,7 +871,7 @@ function wildView(r, ps) {
   if (w.stage === "done") {
     parts.push(
       h("p", { class: "wild-summary" }, w.summary || ""),
-      h("div", { class: "host-footer" }, h("span"), btn("Leaderboard", () => transition(next))));
+      h("div", { class: "host-footer" }, h("span"), btn("Play the card’s question", () => transition(next))));
   }
 
   return h("div", { class: "wild-screen center" },

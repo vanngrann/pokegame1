@@ -1,5 +1,5 @@
 // Shared helpers for every page: DOM building, sign-in gate, timers, leaderboards.
-import { watchAuth, logOut } from "./firebase.js";
+import { watchAuth, logOut, reconnect } from "./firebase.js";
 import { TEAMS, OPTION_SHAPES, rankPlayers, teamTotals } from "./game.js";
 import { icon, cardEmblem } from "./icons.js";
 
@@ -87,6 +87,59 @@ export function renderUserChip(user) {
       location.href = "index.html";
     });
   }
+}
+
+// ---------- Staying connected ----------
+/**
+ * Keeps a game page live without manual refreshes:
+ *  - reconnects when the tab comes back to the screen or the network returns
+ *  - reloads if the page was restored from the browser's back/forward cache (it would be frozen)
+ *  - keeps the screen awake during a game where the browser allows it
+ * onResume runs after each reconnect so the page can catch up (e.g. close an overdue question).
+ */
+export function stayConnected(onResume) {
+  let wakeLock = null;
+  const keepAwake = async () => {
+    try {
+      if ("wakeLock" in navigator && document.visibilityState === "visible" && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      }
+    } catch { /* not supported or not allowed: fine */ }
+  };
+  const resume = async () => {
+    await reconnect();
+    onResume?.();
+    keepAwake();
+  };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resume(); });
+  window.addEventListener("online", resume);
+  window.addEventListener("focus", keepAwake);
+  window.addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
+  keepAwake();
+  return resume;
+}
+
+/**
+ * Watches for a page that never finishes loading: reconnects once, then reloads.
+ * Call done() as soon as live data arrives.
+ */
+export function loadWatchdog({ reconnectAfter = 6000, reloadAfter = 15000 } = {}) {
+  let done = false;
+  const t1 = setTimeout(() => { if (!done) reconnect(); }, reconnectAfter);
+  const t2 = setTimeout(() => {
+    if (done) return;
+    // Reload at most twice in two minutes, so a real outage doesn't loop forever.
+    const key = "tt-reloads";
+    const now = Date.now();
+    let recent = [];
+    try { recent = JSON.parse(sessionStorage.getItem(key) || "[]").filter((t) => now - t < 120000); } catch { /* ignore */ }
+    if (recent.length >= 2) return toast("Still can’t reach the game. Check your connection, then refresh.");
+    recent.push(now);
+    try { sessionStorage.setItem(key, JSON.stringify(recent)); } catch { /* ignore */ }
+    location.reload();
+  }, reloadAfter);
+  return () => { done = true; clearTimeout(t1); clearTimeout(t2); };
 }
 
 // ---------- Small storage wrapper (never throws) ----------
@@ -234,9 +287,12 @@ export function boardGrid(categories, board, onPick, opts = {}) {
       const cell = board.find((c) => c.col === col && c.row === row);
       if (!cell) grid.append(h("div", { class: "board-cell empty" }));
       else if (cell.used) {
+        // Flipped card: its point value, plus the wildcard icon if it carried one.
         const isPoints = /^\d+$/.test(cell.label || "");
-        grid.append(h("div", { class: `board-cell used${isPoints ? "" : " used-wild"}` },
-          isPoints ? h("span", { class: "used-points" }, cell.label) : cell.label ? icon(cell.label) : null));
+        const wildIcon = cell.icon || (!isPoints && cell.label ? cell.label : null); // older boards stored the icon as the label
+        grid.append(h("div", { class: `board-cell used${wildIcon ? " used-wild" : ""}` },
+          wildIcon ? icon(wildIcon) : null,
+          isPoints ? h("span", { class: "used-points" }, cell.label) : null));
       } else {
         grid.append(h("button", {
           class: "board-cell", type: "button", disabled: !onPick,

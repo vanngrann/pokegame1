@@ -10,7 +10,7 @@ import {
   onAuthStateChanged,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, enableNetwork, disableNetwork } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 // Firestore functions the game uses, re-exported so other files import from one place.
@@ -34,7 +34,24 @@ export {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-export const db = getFirestore(app);
+// Some venue and school Wi-Fi blocks Firestore's normal live connection.
+// Auto-detect lets it fall back to a slower method that still works.
+export const db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
+
+/**
+ * Drops and reopens the live connection. Phones that slept or switched networks
+ * sometimes keep a dead connection; this brings them back without a page refresh.
+ */
+let reconnecting = null;
+export function reconnect() {
+  if (!reconnecting) {
+    reconnecting = disableNetwork(db)
+      .then(() => enableNetwork(db))
+      .catch(() => enableNetwork(db).catch(() => {}))
+      .finally(() => { reconnecting = null; });
+  }
+  return reconnecting;
+}
 
 export function watchAuth(callback) {
   return onAuthStateChanged(auth, callback);

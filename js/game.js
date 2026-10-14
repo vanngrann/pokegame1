@@ -6,7 +6,7 @@ export const DEFAULT_SETTINGS = {
   mode: "solo",        // "solo" (everyone for themselves) or "teams"
   teamCount: 2,        // 2 to 4 when mode is "teams"
   seconds: 20,         // time to answer each board question
-  wildcardCount: 6,    // how many board cards are wildcards (0 up to every card)
+  wildcardCount: 6,    // how many cards also carry a wildcard (0 up to every card)
   wildTypes: null,     // which wildcards can appear; null means all of them
 };
 
@@ -108,7 +108,8 @@ export function buildBoard(bank, settings) {
   const cells = {};
   const board = [];
 
-  // Choose which slots become wildcards, spread across the columns as evenly as possible.
+  // Every card is a question. Some cards also carry a wildcard, which plays first.
+  // Spread the wildcards across the columns as evenly as possible.
   const perCol = bank.categories.map(() => 0);
   const order = shuffle(bank.categories.map((_, i) => i));
   for (let placed = 0, k = 0; placed < wildCount && k < total * 2; k++) {
@@ -122,20 +123,12 @@ export function buildBoard(bank, settings) {
   bank.categories.forEach((cat, col) => {
     const size = cat.questions.length;
     const wildRows = new Set(shuffle([...Array(size).keys()]).slice(0, perCol[col]));
-    // Keep a random subset of questions, still in easiest-to-hardest order.
-    const keep = shuffle([...Array(size).keys()]).slice(0, size - perCol[col]).sort((a, b) => a - b);
-    const points = spreadPoints(keep.length);
-    const column = [];
-    let qi = 0;
+    const points = spreadPoints(size);
     for (let row = 0; row < size; row++) {
-      if (wildRows.has(row)) column.push({ kind: "wild", wild: nextType() });
-      else { column.push({ kind: "q", qIndex: keep[qi], points: points[qi] }); qi++; }
-    }
-    column.forEach((cell, row) => {
       const id = `c${col}r${row}`;
-      cells[id] = { ...cell, col };
-      board.push({ id, col, row, used: false, label: null });
-    });
+      cells[id] = { col, kind: "q", qIndex: row, points: points[row], wild: wildRows.has(row) ? nextType() : null };
+      board.push({ id, col, row, used: false, label: null, icon: null });
+    }
   });
 
   return { categories: bank.categories.map((c) => c.name), board, cells };

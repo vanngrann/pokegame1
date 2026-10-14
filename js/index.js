@@ -1,6 +1,6 @@
 // Landing page: sign in, then join a room or host one.
-import { watchAuth, signInWithGoogle, signInAsGuest } from "./firebase.js";
-import { $, renderUserChip } from "./common.js";
+import { watchAuth, signInWithGoogle, signInAsGuest, db, doc, getDoc } from "./firebase.js";
+import { $, h, renderUserChip, store } from "./common.js";
 
 // Where to send people after sign-in (only our own pages are allowed).
 const next = new URLSearchParams(location.search).get("next");
@@ -15,7 +15,42 @@ watchAuth((user) => {
   if (!user) return show("login");
   if (safeNext) return location.replace(safeNext);
   show("hub");
+  offerRejoin(user);
 });
+
+// If this device was in a game (as a player or host) that's still running, offer a one-tap way back.
+async function offerRejoin(user) {
+  const box = $("rejoin");
+  const cards = [];
+  try {
+    const hosted = store.get("tt-host-room", null);
+    if (hosted?.code) {
+      const snap = await getDoc(doc(db, "rooms", hosted.code));
+      if (snap.exists() && snap.data().hostUid === user.uid && snap.data().status !== "podium") {
+        cards.push(h("div", { class: "panel center rejoin" },
+          h("h2", null, "You’re hosting a game"),
+          h("p", { class: "muted" }, `Room ${hosted.code} is still running.`),
+          h("a", { class: "btn btn-primary btn-lg", href: `host.html?room=${hosted.code}` }, "Back to my room")));
+      }
+    }
+    const played = store.get("tt-last-room", null);
+    if (played?.code) {
+      const [roomSnap, meSnap] = await Promise.all([
+        getDoc(doc(db, "rooms", played.code)),
+        getDoc(doc(db, "rooms", played.code, "players", user.uid)),
+      ]);
+      if (roomSnap.exists() && meSnap.exists() && roomSnap.data().status !== "podium") {
+        cards.push(h("div", { class: "panel center rejoin" },
+          h("h2", null, "You’re in a game"),
+          h("p", { class: "muted" }, `Room ${played.code}, playing as ${meSnap.data().name}.`),
+          h("a", { class: "btn btn-primary btn-lg", href: `play.html?code=${played.code}` }, "Rejoin game")));
+      }
+    }
+  } catch (e) {
+    console.warn("Couldn’t check for a game in progress", e);
+  }
+  box.replaceChildren(...cards);
+}
 
 function loginError(text) {
   const el = $("login-error");

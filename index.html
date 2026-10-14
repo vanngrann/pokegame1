@@ -45,6 +45,9 @@
       <div class="hero">
         <h1>Trainer Trivia</h1>
       </div>
+      <!-- Filled in by js/index.js when this device has a game in progress -->
+      <div id="rejoin"></div>
+
       <form id="join-form" class="panel center" autocomplete="off">
         <h2>Join a game</h2>
         <p class="muted">Type the four letters on the host’s screen.</p>
@@ -56,7 +59,7 @@
       <div class="panel center">
         <h2>Host a game</h2>
         <p class="muted">Open this on a laptop or TV everyone can see. Players join from their phones.</p>
-        <a class="btn btn-ghost" href="host.html">Create a room</a>
+        <a class="btn btn-ghost" href="host.html?new=1">Create a room</a>
       </div>
     </section>
   </main>
