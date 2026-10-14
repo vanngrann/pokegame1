@@ -33,6 +33,56 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
 
 In team mode, every player still answers on their own phone and takes their own turns picking. The team score is the sum of its members' scores.
 
+## How points work
+
+There are two kinds of points. **Game points** decide who wins a single game and reset every game. **Tokens** are what players keep and spend. The token shop runs in person, off the website, so nobody can cheat their way to tokens by editing the site's code.
+
+### Game points (in each game)
+
+| Event | Points |
+|---|---|
+| Correct answer | The card's value (100 to 500, random per card) |
+| Answering fast | Up to 25% extra, depending on how much time was left |
+| Picking the card and getting it right | 25% extra |
+| Swords Dance active | Your next correct answer is doubled |
+| Wrong or no answer | Nothing (no penalty) |
+| Wildcards | Can add, steal, swap or take away points (see the wildcard table above) |
+| Final round | Win or lose what you wagered. Everyone can wager up to 500, and a wrong answer never drops a score below 0 |
+
+Game points swing a lot, since Transform swaps scores and an all-in final wager can double them. That's why they are never used as shop money.
+
+### Tokens (kept across games)
+
+> **Status: planned.** This describes the agreed mechanic. The website does not hand out tokens yet.
+
+At the end of each game, every player's finish turns into a small, fixed number of tokens:
+
+| Result | Tokens |
+|---|---|
+| Played the whole game | 1 |
+| 3rd place | +1 |
+| 2nd place | +2 |
+| 1st place | +3 |
+| Got the final question right | +1 |
+
+- The most anyone can earn in one game is **5 tokens**, so shop prices stay meaningful.
+- **Team mode:** everyone on the winning team gets the 1st-place bonus. The 2nd- and 3rd-place bonuses go to the 2nd and 3rd teams.
+- **Ties:** tied players all get the bonus for the higher place.
+- **Guests earn nothing.** Tokens need a Google sign-in, which gives players a reason to make an account.
+
+### Recording tokens
+
+1. **On screen:** the podium shows a "Tokens earned" column, and each phone shows "You earned X tokens", so players know what they're owed before they leave.
+2. **Trainer ID:** every Google player gets a short ID, like `TR-4F7K`, shown on their phone and in the export. Nicknames change from game to game; the ID doesn't, so one person's tokens always add up in one place.
+3. **Host export:** the podium screen has **Copy results** (pastes straight into Google Sheets) and **Download CSV**. Each row has the date, room code, player name, Trainer ID, place, final score and tokens earned.
+4. **The bank:** one Google Sheet that only organizers can edit.
+   - **Games tab:** paste in each game's results.
+   - **Purchases tab:** one row per redemption (date, Trainer ID, item, tokens spent as a negative number).
+   - **Balances tab:** `SUMIF` both tabs by Trainer ID.
+5. **The shop:** players redeem in person, and an organizer checks the balance and logs the purchase. Nothing on the website can spend or change tokens.
+
+**Fallback with no tech:** hand out physical tickets from the podium screen at the end of each game, arcade style. Easier to run, but a lost ticket is a lost token.
+
 ## Files
 
 ```
