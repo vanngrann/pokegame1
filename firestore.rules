@@ -1,0 +1,92 @@
+rules_version = '2';
+
+// Trainer Trivia party game.
+//   rooms/{code}                one live game, written only by its host
+//   rooms/{code}/private/host   hidden board + correct answers (host only)
+//   rooms/{code}/players/{uid}  one per player; players set their own name/team, the host sets scores
+//   rooms/{code}/answers/{id}   one answer per player per question, readable by the host only
+//   rooms/{code}/actions/{id}   picks / wildcard choices sent from phones to the host
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function room(code) {
+      return get(/databases/$(database)/documents/rooms/$(code)).data;
+    }
+    function isHost(code) {
+      return signedIn() && room(code).hostUid == request.auth.uid;
+    }
+    function isPlayer(code) {
+      return signedIn() && exists(/databases/$(database)/documents/rooms/$(code)/players/$(request.auth.uid));
+    }
+    function validName(n) {
+      return n is string && n.size() >= 1 && n.size() <= 20;
+    }
+
+    match /rooms/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && code.matches('^[A-Z]{4}$')
+        && request.resource.data.hostUid == request.auth.uid;
+      allow update: if signedIn()
+        && resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostUid == resource.data.hostUid;
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      match /private/{docId} {
+        allow read, write: if isHost(code);
+      }
+
+      match /players/{uid} {
+        allow read: if signedIn();
+
+        // Join with your own uid, starting at 0 points. hostUid is copied from the room so the
+        // host's score updates below don't need an extra lookup per player.
+        allow create: if signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['name', 'team', 'photo', 'score', 'doubleNext', 'joinedAt', 'hostUid'])
+          && request.resource.data.hostUid == room(code).hostUid
+          && validName(request.resource.data.name)
+          && (request.resource.data.team == null || request.resource.data.team is string)
+          && request.resource.data.photo is string && request.resource.data.photo.size() <= 500
+          && request.resource.data.score == 0
+          && request.resource.data.doubleNext == false
+          && request.resource.data.joinedAt == request.time;
+
+        // Players may change only their name and team; the host may change anything (scores).
+        allow update: if (signedIn()
+              && request.auth.uid == resource.data.hostUid
+              && request.resource.data.hostUid == resource.data.hostUid)
+          || (request.auth.uid == uid
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'team'])
+              && validName(request.resource.data.name)
+              && (request.resource.data.team == null || request.resource.data.team is string));
+
+        // Leave the game, or be removed by the host.
+        allow delete: if signedIn() && (request.auth.uid == uid || request.auth.uid == resource.data.hostUid);
+      }
+
+      match /answers/{answerId} {
+        // One answer per player per question: the id must be "<round>_<uid>" and can't be overwritten.
+        allow create: if isPlayer(code)
+          && request.resource.data.keys().hasOnly(['uid', 'round', 'choice', 'value', 'at'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.round is string
+          && answerId == request.resource.data.round + '_' + request.auth.uid
+          && request.resource.data.at == request.time;
+        allow read, delete: if isHost(code);
+      }
+
+      match /actions/{actionId} {
+        allow create: if isPlayer(code)
+          && request.resource.data.keys().hasOnly(['uid', 'type', 'cellId', 'targetUid', 'at'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.type in ['pick', 'target', 'spin'];
+        allow read, delete: if isHost(code);
+      }
+    }
+  }
+}
