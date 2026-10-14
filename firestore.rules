@@ -78,6 +78,8 @@ service cloud.firestore {
           && answerId == request.resource.data.round + '_' + request.auth.uid
           && request.resource.data.at == request.time;
         allow read, delete: if isHost(code);
+        // Players may check their own answer arrived (ids look like "g1q3_<uid>").
+        allow get: if signedIn() && answerId.split('_').size() == 2 && answerId.split('_')[1] == request.auth.uid;
       }
 
       match /actions/{actionId} {

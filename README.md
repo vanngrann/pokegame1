@@ -6,7 +6,7 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
 
 1. **The host** opens the site on a laptop or TV and clicks **Create a room**. The screen shows a 4-letter code and a QR code.
 2. **Players** open the site on their phones (or scan the QR code), enter the code and a name.
-3. The host picks **Everyone for themselves** or **Teams** (2–4 teams), the time per question, and whether wildcards are on, then starts.
+3. The host picks **Everyone for themselves** or **Teams** (2 to 4 teams), the time per question, **how many wildcards** go on the 36-card board (0 to 36), and **which wildcard types** can appear, then starts.
 4. **Players take turns picking** a face-down card from the board. Columns are categories, and questions get harder further down each column, but **point values are random** (100–500) and hidden until the card flips.
 5. **Everyone answers every question** on their phone. A correct answer earns:
    - the card's points,
@@ -15,7 +15,7 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
 
    Wrong answers cost nothing.
 6. After each answer reveal, everyone sees the **leaderboard**, including who moved up or down.
-7. **Wildcards** are hidden on the board (one per column):
+7. **Wildcards** are hidden on the board. Each one takes the place of a question, spread as evenly as possible across the columns:
 
    | Wildcard | Effect |
    |---|---|
@@ -28,7 +28,7 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
    | Earthquake | Every opponent loses 100 |
 
    Scores never drop below 0. In team mode, "opponents" means players on other teams.
-8. When the board is cleared, the **final round** starts. Everyone sees the category, secretly wagers part of their score, then answers. Right wins the wager; wrong loses it.
+8. When the board is cleared, the **final round** starts. Everyone sees the category, secretly wagers, then answers. Right wins the wager; wrong loses it. Everyone can wager up to 500 even with a low score, and a wrong answer never takes a score below 0.
 9. If first place is tied, the host can run a **tiebreaker**: the closest number guess wins.
 
 In team mode, every player still answers on their own phone and takes their own turns picking. The team score is the sum of its members' scores.
@@ -68,15 +68,17 @@ Files from the earlier solo version (`js/app.js` and `js/tcgdex.js`) are no long
 5. Put your config in `js/firebase-config.js`.
 
 ### Run locally
-Open `index.html` with VS Code's **Live Server** extension. To test with phones on the same Wi-Fi, open `http://YOUR-COMPUTER-IP:5500` on the phone and add that IP to the authorized domains. You can also test alone: open the host in one browser window and a player in a private window (each window signs in separately).
+Open `index.html` with VS Code's **Live Server** extension. To test with phones on the same Wi-Fi, open `http://YOUR-COMPUTER-IP:5500` on the phone and add that IP to the authorized domains. You can also test alone: open the host in one browser window and each extra player in a **private window**. Don't use a second normal tab: every tab in a browser shares one sign-in, so choosing "Play as guest" in another tab would sign the host out too (the game now detects this and tells you).
 
 ### Deploy
 Push the folder to a GitHub repo (with `index.html` at the root), then Settings → Pages → deploy from `main` / `(root)`.
 
 ## Customizing
 
-- **Questions:** edit `js/questions.js`. Each question needs a `prompt`, the right `answer`, and exactly three `wrong` answers. Answer order is shuffled every game. Categories can have any number of questions; 6 categories × 5 questions fits a TV screen best.
+- **Questions:** edit `js/questions.js`. Each question needs a `prompt`, the right `answer`, and exactly three `wrong` answers. Answer order is shuffled every game. The board has one card per question: 6 categories of 6 questions makes 36 cards, which fits a TV best. Categories can have any number of questions.
 - **Scoring:** change `SPEED_BONUS`, `PICKER_BONUS`, `POINT_VALUES`, `STEAL_AMOUNT` and the timer lengths at the top of `js/game.js`.
+- **Default settings:** `DEFAULT_SETTINGS` at the top of `js/game.js` (the host can change them in the lobby).
+- **Final-round minimum wager:** `FINAL_MIN_WAGER` in `js/game.js`.
 - **Wildcards and the wheel:** edit `WILDCARDS` and `WHEEL` in `js/game.js`. A new wildcard type also needs a `case` in `resolveWild()`.
 - **Teams:** names and colors are in `TEAMS` in `js/game.js`.
 

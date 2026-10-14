@@ -43,19 +43,32 @@ export function h(tag, props, ...children) {
 // ---------- Sign-in gate ----------
 /** Runs onReady(user) once signed in. Signed-out visitors go to the sign-in page and come back after. */
 export function requireUser(onReady) {
-  let started = false;
+  let firstUid = null;
   watchAuth((user) => {
     if (!user) {
       const here = location.pathname.split("/").pop() + location.search;
       location.replace("index.html?next=" + encodeURIComponent(here));
       return;
     }
+    // Sign-in is shared by every tab in this browser. If another tab signs in as someone
+    // else, this tab would quietly start acting as that person, so stop and explain instead.
+    if (firstUid && user.uid !== firstUid) return accountSwitched();
     renderUserChip(user);
-    if (!started) {
-      started = true;
+    if (!firstUid) {
+      firstUid = user.uid;
       onReady(user);
     }
   });
+}
+
+function accountSwitched() {
+  const app = $("app") || document.querySelector("main");
+  app.replaceChildren(h("div", { class: "panel center narrow" },
+    h("h2", null, "You signed in as someone else in another tab"),
+    h("p", null, "Every tab in this browser shares one sign-in, so this tab can’t keep playing as before."),
+    h("p", { class: "muted" }, "To test as a second player, use a private window or another device."),
+    h("button", { class: "btn btn-primary", type: "button", onclick: () => location.reload() }, "Reload this tab")));
+  document.dispatchEvent(new CustomEvent("tt-account-switched"));
 }
 
 export function renderUserChip(user) {
@@ -157,19 +170,24 @@ export function teamDot(teamId) {
 
 /**
  * Ranked list of players.
- * opts: { me, prevRanks, gains, limit, showTeams, compact }
+ * opts: { me, prevRanks, gains, limit, showTeams, compact, from, twoCol }
+ *   from:   skip the first N places (the podium already shows them)
+ *   twoCol: two columns once there are more than 5 rows (keeps the big screen from scrolling)
  */
 export function leaderboardView(players, opts = {}) {
-  const ranked = rankPlayers(players);
+  const ranked = rankPlayers(players).slice(opts.from || 0);
   let rows = ranked;
   if (opts.limit && ranked.length > opts.limit) {
     rows = ranked.slice(0, opts.limit);
     const mine = ranked.find((p) => p.id === opts.me);
     if (mine && !rows.includes(mine)) rows = [...rows, mine];
   }
-  if (!rows.length) return h("p", { class: "muted center" }, "No players yet.");
+  if (!rows.length) return opts.from ? null : h("p", { class: "muted center" }, "No players yet.");
+  const extra = ranked.length - rows.length;
+  const twoCol = opts.twoCol && rows.length > (opts.twoColAfter ?? 5);
+  const cls = ["leaderboard", opts.compact ? "compact" : "", twoCol ? "two-col" : ""].join(" ").trim();
 
-  return h("ol", { class: `leaderboard${opts.compact ? " compact" : ""}` },
+  const list = h("ol", { class: cls },
     rows.map((p) => {
       const gain = opts.gains?.[p.id] || 0;
       const prev = opts.prevRanks?.[p.id];
@@ -186,6 +204,8 @@ export function leaderboardView(players, opts = {}) {
         gain ? h("span", { class: `gain ${gain > 0 ? "plus" : "minus"}` }, signed(gain)) : null,
         h("span", { class: "score" }, (p.score || 0).toLocaleString()));
     }));
+  if (twoCol) list.style.setProperty("--half", Math.ceil(rows.length / 2));
+  return extra > 0 && !opts.me ? h("div", null, list, h("p", { class: "muted small center more-note" }, `and ${extra} more`)) : list;
 }
 
 export function teamTotalsView(players, teamCount) {
@@ -256,6 +276,12 @@ export function optionGrid(options, opts = {}) {
 /** +120 / −80 with a real minus sign. */
 export function signed(n) {
   return n > 0 ? `+${n.toLocaleString()}` : n < 0 ? `\u2212${(-n).toLocaleString()}` : "0";
+}
+
+/** Long questions get a smaller size class so they still fit on one screen. */
+export function promptClass(text) {
+  const n = String(text || "").length;
+  return `prompt${n > 150 ? " long" : n > 95 ? " medium" : ""}`;
 }
 
 export function ordinal(n) {

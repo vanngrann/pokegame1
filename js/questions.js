@@ -2,8 +2,9 @@
 // and exactly three wrong answers. Options are shuffled every game.
 //
 // Board layout: one column per category, questions top-to-bottom in the order
-// written here (easiest first). Point values are randomized every game, and one
-// wildcard is hidden in each column when wildcards are on.
+// written here (easiest first). Six categories of six questions make a 36-card board.
+// Point values are randomized every game. Wildcards take the place of questions:
+// the host picks how many (0 to 36) and which questions they replace is random.
 
 export const BANK = {
   title: "Pokémon Trivia Board",
@@ -16,6 +17,11 @@ export const BANK = {
           prompt: "This Ground/Dragon Pokémon evolves from Gabite and is Cynthia’s signature partner.",
           answer: "Garchomp",
           wrong: ["Salamence", "Flygon", "Haxorus"],
+        },
+        {
+          prompt: "This Ghost/Fairy Pokémon hides under a rag made to look like Pikachu.",
+          answer: "Mimikyu",
+          wrong: ["Ditto", "Zorua", "Banette"],
         },
         {
           prompt: "This Pokémon evolves from Riolu through high friendship during the day.",
@@ -60,6 +66,11 @@ export const BANK = {
           wrong: ["Electric", "Ice", "Water"],
         },
         {
+          prompt: "Charizard is Fire/Flying. Which of its weaknesses deals four-times damage?",
+          answer: "Rock",
+          wrong: ["Water", "Electric", "Ice"],
+        },
+        {
           prompt: "Name all three types that a Ghost/Dark Pokémon is immune to.",
           answer: "Normal, Fighting, Psychic",
           wrong: ["Normal, Fighting, Ghost", "Normal, Psychic, Poison", "Fighting, Psychic, Dark"],
@@ -76,6 +87,11 @@ export const BANK = {
       name: "TCG Decisions",
       note: "Standard tabletop rules, no card effects that change them.",
       questions: [
+        {
+          prompt: "How many cards are in a standard Pokémon TCG deck?",
+          answer: "60",
+          wrong: ["40", "50", "75"],
+        },
         {
           prompt: "Your opponent Knocks Out a Pokémon VMAX. How many Prize cards do they normally take?",
           answer: "Three",
@@ -113,6 +129,11 @@ export const BANK = {
           wrong: ["How sharp the corners are", "How glossy the holo foil is", "Whether the colors are printed correctly"],
         },
         {
+          prompt: "A card graded PSA 10 carries this label.",
+          answer: "Gem Mint",
+          wrong: ["Mint", "Near Mint", "Pristine"],
+        },
+        {
           prompt: "This Sword & Shield set features the Umbreon VMAX alternate-art card nicknamed “Moonbreon.”",
           answer: "Evolving Skies",
           wrong: ["Fusion Strike", "Chilling Reign", "Brilliant Stars"],
@@ -138,6 +159,11 @@ export const BANK = {
     {
       name: "Evolution Puzzles",
       questions: [
+        {
+          prompt: "This baby Pokémon evolves into Pikachu.",
+          answer: "Pichu",
+          wrong: ["Pikipek", "Plusle", "Emolga"],
+        },
         {
           prompt: "Name both Pokémon that evolve through trading while holding a Metal Coat.",
           answer: "Onix and Scyther",
@@ -169,6 +195,11 @@ export const BANK = {
     {
       name: "Abilities & Strategy",
       questions: [
+        {
+          prompt: "When a Pokémon with Intimidate enters battle, it lowers this stat of its opponents.",
+          answer: "Attack",
+          wrong: ["Defense", "Speed", "Special Attack"],
+        },
         {
           prompt: "This ability raises a Pokémon’s Attack when it has a status condition and avoids the usual burn reduction to physical damage.",
           answer: "Guts",

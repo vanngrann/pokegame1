@@ -3,16 +3,19 @@
 
 // ---------- Settings ----------
 export const DEFAULT_SETTINGS = {
-  mode: "solo",      // "solo" (everyone for themselves) or "teams"
-  teamCount: 2,      // 2–4 when mode is "teams"
-  seconds: 20,       // time to answer each board question
-  wildcards: true,   // hide one wildcard in each column
+  mode: "solo",        // "solo" (everyone for themselves) or "teams"
+  teamCount: 2,        // 2 to 4 when mode is "teams"
+  seconds: 20,         // time to answer each board question
+  wildcardCount: 6,    // how many board cards are wildcards (0 up to every card)
+  wildTypes: null,     // which wildcards can appear; null means all of them
 };
 
 export const POINT_VALUES = [100, 200, 300, 400, 500];
 export const SPEED_BONUS = 0.25;   // answering instantly adds up to +25% of the card's points
 export const PICKER_BONUS = 0.25;  // the player who picked the card gets +25% if they're right
 export const FINAL_SECONDS = 30;
+export const FINAL_MIN_WAGER = 500; // everyone may wager at least this much, even with a low score
+export const ANSWER_GRACE_MS = 1500; // extra time the host waits for answers still on their way
 export const TIEBREAK_SECONDS = 30;
 export const STEAL_AMOUNT = 200;
 export const SPIN_MS = 4000;       // wheel spin animation length
@@ -75,17 +78,58 @@ export function makeRoomCode() {
  * public: [{ id, col, row, used, label }]
  * cells:  { [id]: { col, kind: "q", qIndex, points } | { col, kind: "wild", wild } }
  */
-export function buildBoard(bank, { wildcards }) {
-  const wildTypes = shuffle(Object.keys(WILDCARDS));
+export function boardSize(bank) {
+  return bank.categories.reduce((n, c) => n + c.questions.length, 0);
+}
+
+/** Wildcard count from settings (older rooms used an on/off switch). */
+export function wildcardCountOf(settings, bank) {
+  const n = settings.wildcardCount ?? (settings.wildcards === false ? 0 : DEFAULT_SETTINGS.wildcardCount);
+  return Math.max(0, Math.min(boardSize(bank), Math.floor(Number(n) || 0)));
+}
+
+export function enabledWildTypes(settings) {
+  const all = Object.keys(WILDCARDS);
+  const picked = Array.isArray(settings.wildTypes) ? settings.wildTypes.filter((t) => all.includes(t)) : all;
+  return picked.length ? picked : all;
+}
+
+/** n point values spread evenly over POINT_VALUES, in random order. */
+function spreadPoints(n) {
+  const out = [];
+  while (out.length < n) out.push(...shuffle(POINT_VALUES));
+  return shuffle(out.slice(0, n));
+}
+
+export function buildBoard(bank, settings) {
+  const total = boardSize(bank);
+  const wildCount = wildcardCountOf(settings, bank);
+  const types = enabledWildTypes(settings);
   const cells = {};
   const board = [];
 
+  // Choose which slots become wildcards, spread across the columns as evenly as possible.
+  const perCol = bank.categories.map(() => 0);
+  const order = shuffle(bank.categories.map((_, i) => i));
+  for (let placed = 0, k = 0; placed < wildCount && k < total * 2; k++) {
+    const col = order[k % order.length];
+    if (perCol[col] < bank.categories[col].questions.length) { perCol[col]++; placed++; }
+  }
+  // Cycle through the enabled wildcard types so the board gets a good mix.
+  let typeBag = [];
+  const nextType = () => { if (!typeBag.length) typeBag = shuffle(types); return typeBag.pop(); };
+
   bank.categories.forEach((cat, col) => {
-    const points = shuffle(POINT_VALUES);
-    const column = cat.questions.map((q, qIndex) => ({ kind: "q", qIndex, points: points[qIndex % points.length] }));
-    if (wildcards) {
-      const at = Math.floor(Math.random() * (column.length + 1));
-      column.splice(at, 0, { kind: "wild", wild: wildTypes[col % wildTypes.length] });
+    const size = cat.questions.length;
+    const wildRows = new Set(shuffle([...Array(size).keys()]).slice(0, perCol[col]));
+    // Keep a random subset of questions, still in easiest-to-hardest order.
+    const keep = shuffle([...Array(size).keys()]).slice(0, size - perCol[col]).sort((a, b) => a - b);
+    const points = spreadPoints(keep.length);
+    const column = [];
+    let qi = 0;
+    for (let row = 0; row < size; row++) {
+      if (wildRows.has(row)) column.push({ kind: "wild", wild: nextType() });
+      else { column.push({ kind: "q", qIndex: keep[qi], points: points[qi] }); qi++; }
     }
     column.forEach((cell, row) => {
       const id = `c${col}r${row}`;
@@ -111,9 +155,13 @@ export function scoreCorrect({ points, elapsedMs, seconds, isPicker, doubled }) 
   return round10(total);
 }
 
+/** The most a player can wager in the final round. */
+export function maxWager(score) {
+  return Math.max(FINAL_MIN_WAGER, score || 0);
+}
+
 export function clampWager(value, score) {
-  const max = Math.max(0, score || 0);
-  return Math.max(0, Math.min(max, Math.floor(Number(value) || 0)));
+  return Math.max(0, Math.min(maxWager(score), Math.floor(Number(value) || 0)));
 }
 
 /** Sorted copy with a `rank` field; equal scores share a rank. */

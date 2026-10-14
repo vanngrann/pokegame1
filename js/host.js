@@ -7,16 +7,20 @@ import {
 } from "./firebase.js";
 import {
   h, requireUser, startTimers, timerBar, toast, leaderboardView, teamTotalsView,
-  avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed,
+  avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
 } from "./common.js";
 import { BANK } from "./questions.js";
 import {
-  DEFAULT_SETTINGS, TEAMS, WILDCARDS, WHEEL, FINAL_SECONDS, TIEBREAK_SECONDS, SPIN_MS,
+  DEFAULT_SETTINGS, TEAMS, WILDCARDS, WHEEL, FINAL_SECONDS, TIEBREAK_SECONDS, SPIN_MS, ANSWER_GRACE_MS,
   buildBoard, optionsFor, scoreCorrect, resolveWild, rankPlayers, makeRoomCode, shuffle,
-  clampWager, smallestTeam, opponentsOf,
+  clampWager, smallestTeam, opponentsOf, boardSize, wildcardCountOf, enabledWildTypes,
 } from "./game.js";
 
 const app = document.getElementById("app");
+
+// Stop drawing (and, on the host, stop running the game) if another tab switches accounts.
+let frozen = false;
+document.addEventListener("tt-account-switched", () => { frozen = true; });
 
 let me = null;
 let code = "";
@@ -161,7 +165,7 @@ function scheduleAutoClose() {
     seconds = room.tiebreak?.seconds || TIEBREAK_SECONDS;
   }
   if (!started) return;
-  closeTimer = setTimeout(closeCurrent, Math.max(0, started + seconds * 1000 + 1000 - Date.now()));
+  closeTimer = setTimeout(closeCurrent, Math.max(0, started + seconds * 1000 + ANSWER_GRACE_MS - Date.now()));
 }
 
 function closeCurrent() {
@@ -189,6 +193,7 @@ function handleAction(snapDoc) {
 
 /** Runs one game step at a time so double-clicks and timers can't collide. */
 async function transition(fn) {
+  if (frozen) return;
   if (busy) { setTimeout(() => transition(fn), 400); return; }
   busy = true;
   try {
@@ -367,7 +372,7 @@ async function closeQuestion() {
       deltas[uid] = gained;
       if (p.doubleNext) flags[uid] = { doubleNext: false };
     }
-    results[uid] = { choice: a.choice, correct, gained, doubled: correct && !!p.doubleNext };
+    results[uid] = { choice: a.choice, correct, gained, doubled: correct && !!p.doubleNext, ms: Math.max(0, (ms(a.at) || Date.now()) - start) };
   }
 
   await applyDeltas({ deltas, flags }, {
@@ -468,7 +473,7 @@ async function closeFinal() {
     if (choice !== null && choice < counts.length) counts[choice]++;
     const correct = choice === correctIndex;
     const wager = clampWager(wagers[p.id], p.score);
-    const gained = correct ? wager : -wager;
+    const gained = correct ? wager : -Math.min(wager, Math.max(0, p.score || 0)); // scores never drop below 0
     if (gained) deltas[p.id] = gained;
     results[p.id] = { choice, correct, wager, gained };
   }
@@ -517,6 +522,7 @@ async function closeTiebreak() {
 // Each snapshot rebuilds the screen only if something visible changed.
 function render() {
   if (!room) return;
+  if (frozen) return;
   const r = plain(room);
   const ps = playerList().map((p) => ({
     id: p.id, name: p.name || "Trainer", score: p.score || 0, team: p.team || null, photo: p.photo || "", doubleNext: !!p.doubleNext,
@@ -555,6 +561,12 @@ function nameOf(ps, id) {
   return ps.find((p) => p.id === id)?.name || "Someone";
 }
 
+function wildHint(n, total) {
+  if (n === 0) return `No wildcards: all ${total} cards are questions.`;
+  if (n >= total) return `Every card is a wildcard. Pure chaos, no questions.`;
+  return `${n} wildcard${n === 1 ? "" : "s"} and ${total - n} question${total - n === 1 ? "" : "s"}.`;
+}
+
 // ----- Lobby -----
 function lobbyView(r, ps) {
   const s = { ...DEFAULT_SETTINGS, ...r.settings };
@@ -566,17 +578,46 @@ function lobbyView(r, ps) {
     class: "input", onchange: (e) => updateSetting(key, key === "mode" ? e.target.value : Number(e.target.value)),
   }, values.map((v) => h("option", { value: String(v), selected: s[key] === v }, labelFn(v))));
 
-  const settings = h("section", { class: "panel" },
+  // Wildcard count: the number updates while dragging, the setting saves on release.
+  const total = boardSize(BANK);
+  const wildCount = wildcardCountOf(s, BANK);
+  const countLabel = h("strong", { class: "setting-value" }, String(wildCount));
+  const countHint = h("span", { class: "muted small" }, wildHint(wildCount, total));
+  const slider = h("input", { type: "range", class: "range", min: 0, max: total, step: 1, "aria-label": "Number of wildcards" });
+  slider.value = String(wildCount);
+  slider.addEventListener("input", () => { countLabel.textContent = slider.value; countHint.textContent = wildHint(Number(slider.value), total); });
+  slider.addEventListener("change", () => updateSetting("wildcardCount", Number(slider.value)));
+
+  const enabled = enabledWildTypes(s);
+  const typeChips = h("div", { class: "type-chips", role: "group", "aria-label": "Wildcards that can appear" },
+    Object.entries(WILDCARDS).map(([key, def]) => {
+      const on = enabled.includes(key);
+      return h("button", {
+        type: "button", class: `type-chip${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", title: def.text,
+        onclick: () => {
+          const next = on ? enabled.filter((t) => t !== key) : [...enabled, key];
+          if (!next.length) return toast("Keep at least one wildcard type on.");
+          updateSetting("wildTypes", next);
+        },
+      }, icon(def.icon), def.name);
+    }));
+
+  const settings = h("section", { class: "panel settings" },
     h("h3", null, "Game settings"),
-    h("label", { class: "field" }, h("span", null, "Play as"),
-      select("mode", ["solo", "teams"], (v) => (v === "solo" ? "Everyone for themselves" : "Teams"))),
-    s.mode === "teams"
-      ? h("label", { class: "field" }, h("span", null, "Number of teams"), select("teamCount", [2, 3, 4], (v) => `${v} teams`))
-      : null,
-    h("label", { class: "field" }, h("span", null, "Time per question"), select("seconds", [15, 20, 30, 45], (v) => `${v} seconds`)),
-    h("label", { class: "field check" },
-      h("input", { type: "checkbox", checked: s.wildcards, onchange: (e) => updateSetting("wildcards", e.target.checked) }),
-      h("span", null, "Include wildcards (one hidden in each column)")));
+    h("div", { class: "settings-grid" },
+      h("label", { class: "field" }, h("span", null, "Play as"),
+        select("mode", ["solo", "teams"], (v) => (v === "solo" ? "Everyone for themselves" : "Teams"))),
+      s.mode === "teams"
+        ? h("label", { class: "field" }, h("span", null, "Teams"), select("teamCount", [2, 3, 4], (v) => `${v} teams`))
+        : h("label", { class: "field" }, h("span", null, "Time per question"), select("seconds", [15, 20, 30, 45], (v) => `${v} seconds`)),
+      s.mode === "teams"
+        ? h("label", { class: "field" }, h("span", null, "Time per question"), select("seconds", [15, 20, 30, 45], (v) => `${v} seconds`))
+        : null),
+    h("div", { class: "field" },
+      h("div", { class: "field-row" }, h("span", null, "Wildcards on the board"), countLabel),
+      slider,
+      countHint),
+    wildCount > 0 ? h("div", { class: "field" }, h("span", null, "Wildcards that can appear"), typeChips) : null);
 
   const personRow = (p) => h("li", null, avatar(p), h("span", { class: "name" }, p.name),
     h("button", {
@@ -602,11 +643,12 @@ function lobbyView(r, ps) {
       h("h2", null, "Join on your phone"),
       h("p", { class: "join-url" }, siteUrl),
       h("p", { class: "room-code", "aria-label": `Room code ${code.split("").join(" ")}` }, code.split("").map((ch) => h("span", null, ch))),
-      h("img", { class: "qr", src: qr, alt: "QR code to join", width: "240", height: "240", onerror: (e) => { e.target.hidden = true; } })),
+      h("img", { class: "qr", src: qr, alt: "QR code to join", width: "240", height: "240", onerror: (e) => { e.target.hidden = true; } }),
+      h("p", { class: "disclaimer" }, "Fan-made and not affiliated with Nintendo, The Pokémon Company, Creatures or GAME FREAK.")),
     h("div", { class: "lobby-side" },
       h("section", { class: "panel" },
         h("h3", null, icon("users"), `Players (${ps.length})`),
-        ps.length ? roster : h("p", { class: "muted" }, "Waiting for players to join…"),
+        ps.length ? h("div", { class: "roster-scroll" }, roster) : h("p", { class: "muted" }, "Waiting for players to join…"),
         h("button", { class: "btn btn-primary btn-lg", type: "button", disabled: !ps.length, onclick: () => transition(startGame) }, "Start game")),
       settings));
 }
@@ -639,7 +681,7 @@ function questionView(r, ps) {
       h("span", { class: "countdown big-count", dataset: { deadline: String(deadline), total: String(total) } })),
     timerBar(deadline, total),
     c.note ? h("p", { class: "muted small center" }, c.note) : null,
-    h("h2", { class: "prompt" }, isFinal ? r.final.prompt : c.prompt),
+    h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
     optionGrid(isFinal ? r.final.options : c.options),
     h("div", { class: "host-footer" },
       h("span", { id: "answer-count", class: "muted" }),
@@ -655,26 +697,33 @@ function revealView(r, ps) {
   const options = isFinal ? r.final.options : c.options;
 
   let detail;
+  const listClass = (n) => `result-list${n > 2 ? " two-col" : ""}`;
+  const more = (n) => (n > 0 ? h("p", { class: "muted small center more-note" }, `and ${n} more`) : null);
   if (isFinal) {
-    detail = h("ul", { class: "result-list" },
-      [...ps].sort((a, b) => (results[b.id]?.gained || 0) - (results[a.id]?.gained || 0)).map((p) => {
+    const sorted = [...ps].sort((a, b) => (results[b.id]?.gained || 0) - (results[a.id]?.gained || 0));
+    const shown = sorted.slice(0, 8);
+    detail = h("div", null, h("ul", { class: listClass(shown.length) },
+      shown.map((p) => {
         const res = results[p.id] || { wager: 0, gained: 0, correct: false };
         return h("li", null, avatar(p), h("span", { class: "name" }, p.name),
           h("span", { class: "muted small" }, `Wagered ${res.wager.toLocaleString()}`),
           res.correct ? badge("check", "Right", "badge-good") : badge("cross", "Wrong", "badge-bad"),
           h("span", { class: `gain ${res.gained > 0 ? "plus" : res.gained < 0 ? "minus" : ""}` }, signed(res.gained)));
-      }));
+      })), more(sorted.length - shown.length));
   } else {
     const right = ps.filter((p) => results[p.id]?.correct).sort((a, b) => results[b.id].gained - results[a.id].gained);
+    const fastest = [...right].sort((a, b) => (results[a.id].ms ?? 0) - (results[b.id].ms ?? 0))[0]?.id;
+    const shown = right.slice(0, 6);
     const answered = Object.keys(results).length;
     detail = h("div", null,
       h("p", { class: "center muted" }, `${right.length} of ${answered || 0} answers were correct`),
-      right.length ? h("ul", { class: "result-list" }, right.map((p, i) => h("li", null,
+      shown.length ? h("ul", { class: listClass(shown.length) }, shown.map((p) => h("li", null,
         avatar(p), h("span", { class: "name" }, p.name),
-        i === 0 ? badge("bolt", "Fastest") : null,
+        p.id === fastest ? badge("bolt", "Fastest") : null,
         p.id === c.pickerUid ? badge("target", "Picker bonus") : null,
         results[p.id].doubled ? badge("swords", "Doubled") : null,
-        h("span", { class: "gain plus" }, `+${results[p.id].gained}`)))) : null);
+        h("span", { class: "gain plus" }, `+${results[p.id].gained}`)))) : null,
+      more(right.length - shown.length));
   }
 
   return h("div", { class: "question-screen reveal-screen" },
@@ -683,7 +732,7 @@ function revealView(r, ps) {
       h("div", { class: "q-head-text" },
         h("p", { class: "q-category" }, isFinal ? r.final.category : c.category),
         h("p", { class: "muted" }, "Answer revealed"))),
-    h("h2", { class: "prompt" }, isFinal ? r.final.prompt : c.prompt),
+    h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
     optionGrid(options, { correctIndex: rv.correctIndex, counts: rv.counts }),
     h("section", { class: "panel" }, detail),
     h("div", { class: "host-footer" }, h("span"), btn(isFinal ? "Final standings" : "Leaderboard", () => transition(next))));
@@ -696,7 +745,7 @@ function leaderboardScreen(r, ps) {
   return h("div", { class: "leaderboard-screen" },
     h("h2", { class: "center" }, "Leaderboard"),
     tm ? h("section", { class: "panel" }, teamTotalsView(ps, r.settings.teamCount)) : null,
-    h("section", { class: "panel" }, leaderboardView(ps, { prevRanks: r.prevRanks, gains: r.gains, showTeams: tm, limit: 12 })),
+    h("section", { class: "panel" }, leaderboardView(ps, { prevRanks: r.prevRanks, gains: r.gains, showTeams: tm, limit: 10, twoCol: true })),
     h("div", { class: "host-footer" },
       h("span", { class: "muted" }, left ? `${left} card${left === 1 ? "" : "s"} left on the board` : "Board cleared!"),
       endGameButton(),
@@ -820,7 +869,7 @@ function podiumView(r, ps) {
       h("strong", null, p.name),
       h("span", { class: "muted" }, `${p.score.toLocaleString()} pts`),
       h("div", { class: "podium-block" }, ordinal(p.rank))))),
-    h("section", { class: "panel" }, leaderboardView(ps, { showTeams: tm })),
+    ranked.length > 3 ? h("section", { class: "panel" }, leaderboardView(ps, { showTeams: tm, from: 3, limit: 8, twoCol: true, twoColAfter: 2 })) : null,
     h("div", { class: "host-footer" },
       tied && BANK.tiebreaker ? btn("Play the tiebreaker", () => transition(startTiebreak)) : h("span"),
       btn("Play again", () => transition(() => updateDoc(roomRef, { status: "lobby" })), tied ? "btn-ghost" : "btn-primary")));
@@ -835,7 +884,7 @@ function tiebreakView(r, ps) {
     h("p", { class: "eyebrow" }, "Tiebreaker: closest guess wins"),
     h("span", { class: "countdown big-count", dataset: { deadline: String(deadline), total: String(total) } }),
     timerBar(deadline, total),
-    h("h2", { class: "prompt" }, tb.prompt),
+    h("h2", { class: promptClass(tb.prompt) }, tb.prompt),
     h("p", null, tb.uids.map((id) => nameOf(ps, id)).join(" vs ")),
     h("div", { class: "host-footer" }, h("span", { id: "answer-count", class: "muted" }), btn("Reveal now", closeCurrent, "btn-ghost")));
 }
@@ -844,7 +893,7 @@ function tiebreakRevealView(r, ps) {
   const tb = r.tiebreak;
   return h("div", { class: "question-screen center" },
     h("p", { class: "eyebrow" }, "Tiebreaker"),
-    h("h2", { class: "prompt" }, tb.prompt),
+    h("h2", { class: promptClass(tb.prompt) }, tb.prompt),
     h("p", { class: "big-answer" }, String(tb.answer)),
     h("ul", { class: "result-list" }, tb.uids.map((id) => {
       const v = tb.results?.[id];

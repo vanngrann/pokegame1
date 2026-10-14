@@ -5,11 +5,15 @@ import {
 } from "./firebase.js";
 import {
   h, requireUser, startTimers, timerBar, toast, store, leaderboardView, teamTotalsView,
-  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed,
+  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
 } from "./common.js";
-import { TEAMS, WILDCARDS, rankPlayers, smallestTeam, opponentsOf, clampWager } from "./game.js";
+import { TEAMS, WILDCARDS, FINAL_MIN_WAGER, rankPlayers, smallestTeam, opponentsOf, clampWager, maxWager } from "./game.js";
 
 const app = document.getElementById("app");
+
+// Stop drawing (and, on the host, stop running the game) if another tab switches accounts.
+let frozen = false;
+document.addEventListener("tt-account-switched", () => { frozen = true; });
 
 let me = null;
 let code = "";
@@ -22,7 +26,7 @@ let lastKey = "";
 let pendingAction = null;       // shows "sending…" after a pick/target/spin
 let pendingTimer = null;
 let wagerDraft = null;          // final-round slider value (kept outside the view so redraws don't reset it)
-let local = { answers: {}, seen: {} }; // this device's answers + when each question first appeared
+let local = { answers: {}, sent: {}, seen: {} }; // this device's answers, which ones the server confirmed, and when each question first appeared
 
 const saveLocal = () => store.set(`tt-play-${code}-${me.uid}`, local);
 
@@ -33,7 +37,7 @@ requireUser(async (user) => {
   if (code.length !== 4) return askForCode();
   roomRef = doc(db, "rooms", code);
   myRef = doc(db, "rooms", code, "players", me.uid);
-  local = store.get(`tt-play-${code}-${me.uid}`, { answers: {}, seen: {} });
+  local = { answers: {}, sent: {}, seen: {}, ...store.get(`tt-play-${code}-${me.uid}`, {}) };
 
   try {
     const snap = await getDoc(roomRef);
@@ -131,22 +135,29 @@ const stageKey = (r) => (r ? [r.status, r.current?.round, r.wild?.stage, r.picke
 async function submitAnswer(round, payload) {
   if (local.answers[round] !== undefined) return;
   local.answers[round] = payload.choice ?? payload.value;
+  delete local.sent[round];
   saveLocal();
   render(true);
+  const ref = doc(db, "rooms", code, "answers", `${round}_${me.uid}`);
   try {
-    await setDoc(doc(db, "rooms", code, "answers", `${round}_${me.uid}`), {
-      uid: me.uid, round, choice: payload.choice ?? null, value: payload.value ?? null, at: serverTimestamp(),
-    });
+    await setDoc(ref, { uid: me.uid, round, choice: payload.choice ?? null, value: payload.value ?? null, at: serverTimestamp() });
+    local.sent[round] = true;
   } catch (e) {
     console.error(e);
-    // permission-denied usually means this answer was already saved, so keep it locked.
-    if (e.code !== "permission-denied") {
+    // A refused write can mean the answer was already saved (a double tap). Check before giving up.
+    let saved = false;
+    try { saved = (await getDoc(ref)).exists(); } catch { /* not readable: treat as not saved */ }
+    if (saved) {
+      local.sent[round] = true;
+    } else {
       delete local.answers[round];
-      saveLocal();
-      render(true);
-      toast("Couldn’t send your answer. Tap again.");
+      toast(e.code === "permission-denied"
+        ? "Your answer wasn’t accepted. If you were removed from the game, join again."
+        : "Couldn’t send your answer. Check your connection and tap again.");
     }
   }
+  saveLocal();
+  render(true);
 }
 
 async function sendAction(type, extra = {}) {
@@ -190,6 +201,7 @@ function activeRound(r) {
 
 function render(force = false) {
   if (!room || !playersLoaded) return;
+  if (frozen) return;
   if (!players.has(me.uid)) {
     lastKey = "removed";
     return app.replaceChildren(h("div", { class: "panel center" },
@@ -213,6 +225,7 @@ function render(force = false) {
     meId: me.uid,
     round,
     mine: round ? local.answers[round] : undefined,
+    sent: round ? !!local.sent[round] : false,
     seen: round ? local.seen[round] : null,
     pending: pendingAction,
   };
@@ -256,7 +269,7 @@ function lobbyView(m) {
           onclick: () => updateDoc(myRef, { team: t.id }).catch(() => toast("Couldn’t switch teams.")),
         }, t.name, h("small", null, (() => { const n = m.ps.filter((p) => p.team === t.id).length; return `${n} player${n === 1 ? "" : "s"}`; })()));
       }))) : null,
-    h("section", { class: "panel" },
+    h("section", { class: "panel fill" },
       h("h3", null, `Players (${m.ps.length})`),
       h("ul", { class: "roster" }, m.ps.map((p) => h("li", null, avatar(p), h("span", { class: "name" }, tm ? teamDot(p.team) : null, p.name))))),
     h("button", { class: "btn btn-ghost", type: "button", onclick: leave }, "Leave game"));
@@ -294,12 +307,12 @@ function questionView(m) {
       !isFinal && c.pickerUid === m.meId ? badge("target", "Your pick: bonus if right") : null,
       !isFinal && mine.doubleNext ? badge("swords", "Double points") : null),
     timerBar(deadline, total),
-    h("h2", { class: "prompt" }, isFinal ? r.final.prompt : c.prompt),
+    h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
     optionGrid(isFinal ? r.final.options : c.options, {
       onPick: answered ? null : (i) => submitAnswer(m.round, { choice: i }),
       chosen: answered ? m.mine : null,
     }),
-    answered ? h("p", { class: "locked center" }, "Answer locked in! Waiting for everyone else…") : null);
+    answered ? h("p", { class: "locked center" }, m.sent ? [icon("check"), "Locked in. Waiting for everyone else."] : "Sending your answer…") : null);
 }
 
 // ----- Reveal (board + final) -----
@@ -307,9 +320,13 @@ function revealView(m) {
   const r = m.r;
   const isFinal = r.status === "final-reveal";
   const res = r.reveal?.results?.[m.meId];
+  const myRound = isFinal ? `g${r.game}f` : r.current?.round;
+  const triedToAnswer = myRound && local.answers[myRound] !== undefined;
   let result;
   if (!res || res.choice === null) {
-    result = h("div", { class: "result neutral" }, h("div", { class: "result-icon" }, icon("clock")), h("h2", null, "No answer this time"),
+    result = h("div", { class: "result neutral" }, h("div", { class: "result-icon" }, icon("clock")),
+      h("h2", null, triedToAnswer ? "Your answer arrived too late" : "No answer this time"),
+      triedToAnswer ? h("p", { class: "result-note" }, "Answers count only if they reach the host before time runs out.") : null,
       isFinal && res?.gained ? h("p", { class: "gain-big" }, signed(res.gained)) : null);
   } else if (res.correct) {
     result = h("div", { class: "result good" }, h("div", { class: "result-icon" }, icon("check")), h("h2", null, "Correct"),
@@ -342,7 +359,7 @@ function leaderboardScreen(m) {
       moved ? h("p", { class: `move ${moved > 0 ? "up" : "down"} center` }, icon(moved > 0 ? "up" : "down"),
         moved > 0 ? `Up ${moved}` : `Down ${-moved}`) : null),
     teamMode(m) ? h("section", { class: "panel" }, teamTotalsView(m.ps, m.r.settings.teamCount)) : null,
-    h("section", { class: "panel" }, leaderboardView(m.ps, { me: m.meId, prevRanks: m.r.prevRanks, gains: m.r.gains, limit: 5, compact: true, showTeams: teamMode(m) })));
+    h("section", { class: "panel fill" }, leaderboardView(m.ps, { me: m.meId, prevRanks: m.r.prevRanks, gains: m.r.gains, limit: 5, compact: true, showTeams: teamMode(m) })));
 }
 
 // ----- Wildcards -----
@@ -384,7 +401,7 @@ function wildView(m) {
 // ----- Final round: wager -----
 function finalWagerView(m) {
   const mine = mePlayer(m);
-  const max = Math.max(0, mine.score);
+  const max = maxWager(mine.score);
   const locked = m.mine !== undefined;
   const header = [meBar(m), h("p", { class: "eyebrow center" }, "Final round"), h("h2", { class: "center" }, m.r.final.category)];
 
@@ -403,15 +420,15 @@ function finalWagerView(m) {
 
   return h("div", { class: "stack" }, ...header,
     h("section", { class: "panel center" },
-      max > 0
-        ? h("p", { class: "muted" }, `How much of your ${max.toLocaleString()} points will you risk?`)
-        : h("p", { class: "muted" }, "You don’t have points to wager, but you can still answer for bragging rights."),
+      mine.score >= FINAL_MIN_WAGER
+        ? h("p", { class: "muted" }, `How much of your ${mine.score.toLocaleString()} points will you risk?`)
+        : h("p", { class: "muted" }, `Everyone can wager up to ${FINAL_MIN_WAGER}. A wrong answer can’t take you below 0.`),
       value,
-      max > 0 ? slider : null,
-      max > 0 ? h("div", { class: "quick-wagers" },
+      slider,
+      h("div", { class: "quick-wagers" },
         h("button", { class: "btn btn-ghost btn-inline", type: "button", onclick: () => setWager(0) }, "Nothing"),
         h("button", { class: "btn btn-ghost btn-inline", type: "button", onclick: () => setWager(Math.round(max / 2)) }, "Half"),
-        h("button", { class: "btn btn-ghost btn-inline", type: "button", onclick: () => setWager(max) }, "All in")) : null,
+        h("button", { class: "btn btn-ghost btn-inline", type: "button", onclick: () => setWager(max) }, "All in")),
       h("button", {
         class: "btn btn-primary btn-lg", type: "button",
         onclick: () => submitAnswer(m.round, { value: clampWager(wagerDraft, max) }),
@@ -430,7 +447,7 @@ function podiumView(m) {
       mine.rank === 1 && !tied ? h("p", { class: "winner-line" }, icon("trophy"), "You won!") : null,
       h("p", { class: "muted" }, `${mine.score.toLocaleString()} pts`)),
     teamMode(m) ? h("section", { class: "panel" }, teamTotalsView(m.ps, m.r.settings.teamCount)) : null,
-    h("section", { class: "panel" }, leaderboardView(m.ps, { me: m.meId, limit: 10, compact: true, showTeams: teamMode(m) })));
+    h("section", { class: "panel fill" }, leaderboardView(m.ps, { me: m.meId, limit: 10, compact: true, showTeams: teamMode(m) })));
 }
 
 // ----- Tiebreaker -----
@@ -454,7 +471,7 @@ function tiebreakView(m) {
     meBar(m),
     h("p", { class: "eyebrow center" }, "Tiebreaker: closest guess wins"),
     timerBar(deadline, total),
-    h("h2", { class: "prompt" }, tb.prompt),
+    h("h2", { class: promptClass(tb.prompt) }, tb.prompt),
     h("form", {
       class: "panel center",
       onsubmit: (e) => {
