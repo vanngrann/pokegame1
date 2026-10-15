@@ -6,6 +6,7 @@ import {
 import {
   h, requireUser, startTimers, timerBar, toast, store, leaderboardView, teamTotalsView,
   avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass, stayConnected, loadWatchdog,
+  animatedLeaderboard, displayScores, countUp, signedFormat, confetti, once,
 } from "./common.js";
 import { TEAMS, WILDCARDS, FINAL_MIN_WAGER, rankPlayers, smallestTeam, opponentsOf, clampWager, maxWager } from "./game.js";
 
@@ -246,9 +247,9 @@ function render(force = false) {
   const m = {
     view: r.status,
     r,
-    ps: [...players.values()].map((p) => ({
+    ps: displayScores([...players.values()].map((p) => ({
       id: p.id, name: p.name || "Trainer", score: p.score || 0, team: p.team || null, photo: p.photo || "", doubleNext: !!p.doubleNext,
-    })),
+    })), r),
     meId: me.uid,
     round,
     mine: round ? local.answers[round] : undefined,
@@ -266,14 +267,49 @@ const mePlayer = (m) => m.ps.find((p) => p.id === m.meId);
 const nameOf = (m, id) => m.ps.find((p) => p.id === id)?.name || "Someone";
 const teamMode = (m) => m.r.settings?.mode === "teams";
 
+// ---------- Points animations ----------
+// What the score bar last showed, so a change counts up instead of jumping.
+let shownScore = null;
+
+/** Turn id, so each turn's animations play once. */
+const turnKey = (r) => `${code}:${r.game}:${r.qCount}:${r.wild?.cellId || ""}:${r.status.startsWith("final") ? "final" : ""}`;
+
 function meBar(m) {
   const ranked = rankPlayers(m.ps);
   const mine = ranked.find((p) => p.id === m.meId);
+  const num = h("span", null, mine.score.toLocaleString());
+  const from = shownScore ?? mine.score;
+  shownScore = mine.score;
+  // Wait for the result animation on screen to finish before ticking the bar.
+  if (from !== mine.score) countUp(num, from, mine.score, { delay: 2200, duration: 900 });
   return h("div", { class: "me-bar" },
     avatar(mine),
     h("span", { class: "name" }, teamMode(m) ? teamDot(mine.team) : null, mine.name, mine.doubleNext ? badge("swords", "", "badge-icon") : null),
     h("span", { class: "muted" }, `${ordinal(mine.rank)} of ${ranked.length}`),
-    h("span", { class: "score" }, `${mine.score.toLocaleString()} pts`));
+    h("span", { class: "score" }, num, " pts"));
+}
+
+/** The big "+240" on a result, counting up from zero the first time it's shown. */
+function gainBig(gain, key, cls = "") {
+  const el = h("p", { class: `gain-big ${cls}`.trim() }, signed(gain));
+  if (gain && once("gain:" + key)) countUp(el, 0, gain, { delay: 250, duration: 750, format: signedFormat });
+  return el;
+}
+
+/** "Your total": the points just won fly into the total, which then counts up. */
+function pointsFlow(m, gain, key) {
+  const after = mePlayer(m).score;
+  const before = after - gain;
+  const total = h("span", { class: "total-num" }, after.toLocaleString());
+  const fly = h("span", { class: `fly ${gain < 0 ? "minus" : "plus"}`, "aria-hidden": "true" }, signed(gain));
+  if (gain && once("flow:" + key)) {
+    total.textContent = before.toLocaleString();
+    fly.classList.add("go");
+    countUp(total, before, after, { delay: 1500, duration: 900 });
+  }
+  return h("div", { class: "total-row" },
+    h("span", { class: "muted" }, "Your total"),
+    h("span", { class: "total-wrap" }, gain ? fly : null, total));
 }
 
 // ----- Lobby -----
@@ -354,19 +390,21 @@ function revealView(m) {
     result = h("div", { class: "result neutral" }, h("div", { class: "result-icon" }, icon("clock")),
       h("h2", null, triedToAnswer ? "Your answer arrived too late" : "No answer this time"),
       triedToAnswer ? h("p", { class: "result-note" }, "Answers count only if they reach the host before time runs out.") : null,
-      isFinal && res?.gained ? h("p", { class: "gain-big" }, signed(res.gained)) : null);
+      isFinal && res?.gained ? gainBig(res.gained, `${turnKey(r)}:${m.meId}`) : null);
   } else if (res.correct) {
     result = h("div", { class: "result good" }, h("div", { class: "result-icon" }, icon("check")), h("h2", null, "Correct"),
-      h("p", { class: "gain-big" }, signed(res.gained)),
+      gainBig(res.gained, `${turnKey(r)}:${m.meId}`),
       !isFinal && r.current?.pickerUid === m.meId ? h("p", { class: "result-note" }, "Includes your picker bonus") : null,
       res.doubled ? h("p", { class: "result-note" }, "Doubled by Swords Dance") : null);
   } else {
     result = h("div", { class: "result bad" }, h("div", { class: "result-icon" }, icon("cross")), h("h2", null, "Not quite"),
-      isFinal && res.gained ? h("p", { class: "gain-big" }, signed(res.gained)) : null);
+      isFinal && res.gained ? gainBig(res.gained, `${turnKey(r)}:${m.meId}`) : null);
   }
+  const gained = res?.gained || 0;
   return h("div", { class: "stack" },
     meBar(m),
     result,
+    gained ? pointsFlow(m, gained, `${turnKey(r)}:${m.meId}`) : null,
     h("section", { class: "panel center" }, h("p", { class: "muted small" }, "The answer was"), h("p", { class: "answer-text-big" }, r.reveal?.answer || "")));
 }
 
@@ -374,19 +412,36 @@ function revealView(m) {
 function leaderboardScreen(m) {
   const ranked = rankPlayers(m.ps);
   const mine = ranked.find((p) => p.id === m.meId);
+  const key = turnKey(m.r);
   const gain = m.r.gains?.[m.meId] || 0;
-  const prev = m.r.prevRanks?.[m.meId];
-  const moved = prev ? prev - mine.rank : 0;
+  const prevRank = m.r.prevRanks?.[m.meId];
+  const moved = prevRank ? prevRank - mine.rank : 0;
+  const fresh = once("myrank:" + key);
+
+  // Start from where you were, then reveal the new rank once the list has moved.
+  const rankEl = h("p", { class: "big-rank" }, ordinal(fresh && prevRank ? prevRank : mine.rank));
+  const scoreEl = h("span", null, mine.score.toLocaleString());
+  const moveEl = h("p", { class: `move ${moved > 0 ? "up" : "down"} center`, hidden: fresh ? true : !moved },
+    moved ? [icon(moved > 0 ? "up" : "down"), moved > 0 ? `Up ${moved}` : `Down ${-moved}`] : null);
+  if (fresh) {
+    if (gain) countUp(scoreEl, mine.score - gain, mine.score, { delay: 900, duration: 900 });
+    setTimeout(() => {
+      rankEl.textContent = ordinal(mine.rank);
+      if (moved) { rankEl.classList.add("pop"); moveEl.hidden = false; }
+    }, 2300);
+  }
+
   return h("div", { class: "stack" },
     h("section", { class: "panel center" },
       h("p", { class: "eyebrow" }, "You’re in"),
-      h("p", { class: "big-rank" }, ordinal(mine.rank)),
-      h("p", { class: "muted" }, `${mine.score.toLocaleString()} points`,
-        gain ? ` (${signed(gain)} this round)` : ""),
-      moved ? h("p", { class: `move ${moved > 0 ? "up" : "down"} center` }, icon(moved > 0 ? "up" : "down"),
-        moved > 0 ? `Up ${moved}` : `Down ${-moved}`) : null),
-    teamMode(m) ? h("section", { class: "panel" }, teamTotalsView(m.ps, m.r.settings.teamCount)) : null,
-    h("section", { class: "panel fill" }, leaderboardView(m.ps, { me: m.meId, prevRanks: m.r.prevRanks, gains: m.r.gains, limit: 5, compact: true, showTeams: teamMode(m) })));
+      rankEl,
+      h("p", { class: "muted" }, scoreEl, " points", gain ? ` (${signed(gain)} this round)` : ""),
+      moveEl),
+    teamMode(m) ? h("section", { class: "panel" }, teamTotalsView(m.ps, m.r.settings.teamCount, { prevScores: m.r.prevScores, animKey: key })) : null,
+    h("section", { class: "panel fill" }, animatedLeaderboard(m.ps, {
+      me: m.meId, prevRanks: m.r.prevRanks, prevScores: m.r.prevScores, gains: m.r.gains, animKey: key,
+      limit: 5, compact: true, showTeams: teamMode(m), holdMs: 700,
+    })));
 }
 
 // ----- Wildcards -----
@@ -412,8 +467,9 @@ function wildView(m) {
   } else if (w.stage === "done") {
     const gain = m.r.gains?.[m.meId] || 0;
     parts.push(h("p", { class: "wild-summary" }, w.summary || ""),
-      h("p", { class: "muted center small" }, "This card’s question is up next."),
-      gain ? h("p", { class: `gain-big center ${gain < 0 ? "minus" : "plus"}` }, signed(gain)) : null);
+      gain ? gainBig(gain, `${turnKey(m.r)}:wild:${m.meId}`, `center ${gain < 0 ? "minus" : "plus"}`) : null,
+      gain ? pointsFlow(m, gain, `${turnKey(m.r)}:wild:${m.meId}`) : null,
+      h("p", { class: "muted center small" }, "This card’s question is up next."));
   }
 
   return h("div", { class: "stack" },
@@ -468,6 +524,7 @@ function podiumView(m) {
   const ranked = rankPlayers(m.ps);
   const mine = ranked.find((p) => p.id === m.meId);
   const tied = ranked.filter((p) => p.rank === 1).length > 1;
+  if (mine.rank === 1 && !tied && once(`podium:${code}:${m.r.game}`)) setTimeout(() => confetti(60), 400);
   return h("div", { class: "stack" },
     h("section", { class: "panel center" },
       h("p", { class: "eyebrow" }, "Final result"),

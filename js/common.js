@@ -170,6 +170,7 @@ export function startTimers() {
         el.classList.toggle("low", f < 0.3);
       } else {
         el.textContent = Math.ceil(left / 1000);
+        el.classList.toggle("urgent", left > 0 && left <= 5000);
       }
     });
     requestAnimationFrame(tick);
@@ -221,6 +222,78 @@ export function teamDot(teamId) {
   return t ? h("span", { class: "team-dot", style: { background: t.color }, title: t.name }) : null;
 }
 
+// ---------- Animation helpers ----------
+export const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Each animation plays once. Redrawing the same screen later shows the end state instead.
+const played = new Set();
+export function once(key) {
+  if (played.has(key)) return false;
+  played.add(key);
+  return true;
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const ease = (t) => 1 - Math.pow(1 - t, 3);
+
+/** Counts an element's number from `from` to `to`. */
+export function countUp(el, from, to, { duration = 900, delay = 0, format = (n) => Math.round(n).toLocaleString() } = {}) {
+  if (reducedMotion() || from === to) { el.textContent = format(to); return Promise.resolve(); }
+  el.textContent = format(from);
+  return wait(delay).then(() => new Promise((resolve) => {
+    const t0 = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      el.textContent = format(from + (to - from) * ease(p));
+      if (p < 1) requestAnimationFrame(step);
+      else { el.classList.remove("counted"); void el.offsetWidth; el.classList.add("counted"); resolve(); }
+    };
+    requestAnimationFrame(step);
+  }));
+}
+export const signedFormat = (n) => signed(Math.round(n));
+
+/** Gives each child a --i index so CSS can stagger their entrance. */
+export function stagger(el) {
+  [...el.children].forEach((c, i) => c.style.setProperty("--i", i));
+  return el;
+}
+
+/**
+ * Scores as they should look right now. The room stores each player's score from before
+ * the latest change (prevScores) plus the change (gains), so every screen shows the same
+ * numbers even if the players' own updates arrive a moment later.
+ */
+export function displayScores(players, room) {
+  const prev = room?.prevScores;
+  if (!prev) return players;
+  return players.map((p) => {
+    const gain = room.gains?.[p.id] || 0;
+    // The player's own update hasn't arrived yet: show where it's about to land.
+    if (gain && prev[p.id] != null && p.score === prev[p.id]) return { ...p, score: prev[p.id] + gain };
+    return p;
+  });
+}
+
+/** A short burst of falling confetti in the brand colors. */
+export function confetti(count = 70) {
+  if (reducedMotion()) return;
+  const colors = ["#ffd200", "#2f6fd6", "#e5484d", "#13a57a", "#ffffff", "#f5b700"];
+  const layer = h("div", { class: "confetti", "aria-hidden": "true" });
+  for (let i = 0; i < count; i++) {
+    const bit = h("i");
+    bit.style.left = `${Math.random() * 100}%`;
+    bit.style.background = colors[i % colors.length];
+    bit.style.animationDelay = `${Math.random() * 0.9}s`;
+    bit.style.animationDuration = `${2.4 + Math.random() * 1.8}s`;
+    bit.style.setProperty("--drift", `${(Math.random() - 0.5) * 160}px`);
+    bit.style.setProperty("--spin", `${(Math.random() - 0.5) * 1080}deg`);
+    layer.append(bit);
+  }
+  document.body.append(layer);
+  setTimeout(() => layer.remove(), 5200);
+}
+
 /**
  * Ranked list of players.
  * opts: { me, prevRanks, gains, limit, showTeams, compact, from, twoCol }
@@ -261,14 +334,142 @@ export function leaderboardView(players, opts = {}) {
   return extra > 0 && !opts.me ? h("div", null, list, h("p", { class: "muted small center more-note" }, `and ${extra} more`)) : list;
 }
 
-export function teamTotalsView(players, teamCount) {
+/**
+ * Team bars. With opts.prevScores + opts.animKey the bars and totals grow from
+ * where they were before this turn.
+ */
+function boardRow(p, opts, score, rank) {
+  const scoreEl = h("span", { class: "score" }, score.toLocaleString());
+  const rankEl = h("span", { class: "rank" }, rank);
+  const gainEl = h("span", { class: "gain" });
+  const moveEl = h("span", { class: "move" });
+  const li = h("li", { class: [p.id === opts.me ? "me" : "", rank <= 3 ? `top top-${rank}` : ""].join(" ").trim() || null },
+    rankEl, avatar(p),
+    h("span", { class: "name" }, opts.showTeams ? teamDot(p.team) : null, p.name || "Trainer",
+      p.doubleNext ? badge("swords", "", "badge-icon") : null),
+    moveEl, gainEl, scoreEl);
+  return { li, rankEl, scoreEl, gainEl, moveEl };
+}
+
+function setRank(row, rank) {
+  row.rankEl.textContent = rank;
+  row.li.classList.remove("top", "top-1", "top-2", "top-3");
+  if (rank <= 3) row.li.classList.add("top", `top-${rank}`);
+}
+
+/**
+ * The leaderboard with motion: it opens in the previous order with the old scores,
+ * each player's gain pops in, scores count up, then rows glide to their new places.
+ * Plays once per opts.animKey; otherwise it's the plain leaderboardView.
+ * opts: leaderboardView options plus { prevScores, animKey }
+ */
+export function animatedLeaderboard(players, opts = {}) {
+  const prev = opts.prevScores || {};
+  const gains = opts.gains || {};
+  const changed = players.some((p) => gains[p.id]);
+  if (!opts.animKey || !changed || reducedMotion() || !once("lb:" + opts.animKey)) return leaderboardView(players, opts);
+
+  const oldPlayers = players.map((p) => ({ ...p, score: prev[p.id] ?? p.score - (gains[p.id] || 0) }));
+  const pick = (ranked) => {
+    if (!opts.limit || ranked.length <= opts.limit) return ranked;
+    const rows = ranked.slice(0, opts.limit);
+    const mine = ranked.find((p) => p.id === opts.me);
+    return mine && !rows.includes(mine) ? [...rows, mine] : rows;
+  };
+  const oldRanked = rankPlayers(oldPlayers);
+  const newRanked = rankPlayers(players);
+  const oldRows = pick(oldRanked);
+  const newRows = pick(newRanked);
+  const newById = new Map(newRanked.map((p) => [p.id, p]));
+  const oldRankOf = new Map(oldRanked.map((p) => [p.id, p.rank]));
+
+  const twoCol = opts.twoCol && Math.max(oldRows.length, newRows.length) > (opts.twoColAfter ?? 5);
+  const list = h("ol", { class: ["leaderboard", "animated", opts.compact ? "compact" : "", twoCol ? "two-col" : ""].join(" ").trim() });
+  if (twoCol) list.style.setProperty("--half", Math.ceil(Math.max(oldRows.length, newRows.length) / 2));
+
+  const rows = new Map();
+  for (const p of oldRows) {
+    const row = boardRow(newById.get(p.id), opts, p.score, p.rank);
+    rows.set(p.id, row);
+    list.append(row.li);
+  }
+
+  (async () => {
+    await wait(opts.holdMs ?? 900);
+    // 1. Gains pop in and scores count up.
+    for (const [id, row] of rows) {
+      const g = gains[id] || 0;
+      if (!g) continue;
+      row.gainEl.textContent = signed(g);
+      row.gainEl.className = `gain pop ${g > 0 ? "plus" : "minus"}`;
+      countUp(row.scoreEl, oldPlayers.find((p) => p.id === id).score, newById.get(id).score, { duration: 900 });
+    }
+    await wait(1300);
+    if (!list.isConnected) return;
+
+    // 2. Glide to the new order (FLIP: measure, reorder, play the difference back).
+    const first = new Map([...rows].map(([id, r]) => [id, r.li.getBoundingClientRect()]));
+    const keep = new Set(newRows.map((p) => p.id));
+    for (const [id, row] of rows) if (!keep.has(id)) { row.li.remove(); rows.delete(id); }
+    for (const p of newRows) {
+      let row = rows.get(p.id);
+      if (!row) {
+        row = boardRow(p, opts, p.score, p.rank);
+        row.li.classList.add("enter");
+        rows.set(p.id, row);
+      }
+      list.append(row.li); // appending in order moves existing rows too
+      setRank(row, p.rank);
+      const moved = (oldRankOf.get(p.id) ?? p.rank) - p.rank;
+      if (moved) {
+        row.moveEl.className = `move ${moved > 0 ? "up" : "down"}`;
+        row.moveEl.replaceChildren(icon(moved > 0 ? "up" : "down"), String(Math.abs(moved)));
+      }
+      if (moved > 0) row.li.classList.add("rose");
+    }
+    for (const [id, row] of rows) {
+      const a = first.get(id);
+      if (!a) continue;
+      const b = row.li.getBoundingClientRect();
+      const dx = a.left - b.left;
+      const dy = a.top - b.top;
+      if (!dx && !dy) continue;
+      row.li.style.transition = "none";
+      row.li.style.transform = `translate(${dx}px, ${dy}px)`;
+      row.li.style.zIndex = "2";
+    }
+    void list.offsetWidth;
+    for (const row of rows.values()) {
+      if (!row.li.style.transform) continue;
+      row.li.style.transition = "transform 0.75s cubic-bezier(0.2, 0.9, 0.25, 1)";
+      row.li.style.transform = "";
+      row.li.addEventListener("transitionend", () => { row.li.style.zIndex = ""; }, { once: true });
+    }
+  })();
+  return list;
+}
+
+export function teamTotalsView(players, teamCount, opts = {}) {
   const totals = teamTotals(players, teamCount);
-  const top = totals[0]?.score || 1;
+  const animate = opts.prevScores && opts.animKey && !reducedMotion() && once("teams:" + opts.animKey);
+  const before = animate
+    ? new Map(teamTotals(players.map((p) => ({ ...p, score: opts.prevScores[p.id] ?? p.score })), teamCount).map((t) => [t.id, t.score]))
+    : null;
+  const top = Math.max(1, ...totals.map((t) => t.score), ...(before ? [...before.values()] : []));
+  const width = (n) => `${Math.max(4, (n / top) * 100)}%`;
   return h("div", { class: "team-totals" },
-    totals.map((t) => h("div", { class: "team-row" },
-      h("span", { class: "team-name" }, h("span", { class: "team-dot", style: { background: t.color } }), t.name),
-      h("div", { class: "team-bar" }, h("div", { style: { width: `${Math.max(4, (t.score / top) * 100)}%`, background: t.color } })),
-      h("span", { class: "score" }, t.score.toLocaleString()))));
+    totals.map((t) => {
+      const bar = h("div", { style: { width: width(before ? before.get(t.id) : t.score), background: t.color } });
+      const num = h("span", { class: "score" }, (before ? before.get(t.id) : t.score).toLocaleString());
+      if (before) {
+        setTimeout(() => { bar.style.width = width(t.score); }, 700);
+        countUp(num, before.get(t.id), t.score, { delay: 700, duration: 900 });
+      }
+      return h("div", { class: "team-row" },
+        h("span", { class: "team-name" }, h("span", { class: "team-dot", style: { background: t.color } }), t.name),
+        h("div", { class: "team-bar" }, bar),
+        num);
+    }));
 }
 
 // ---------- Board + answers ----------
@@ -305,6 +506,12 @@ export function boardGrid(categories, board, onPick, opts = {}) {
   return grid;
 }
 
+function countSpan(n, key) {
+  const el = h("span", { class: "answer-count", title: "Players who chose this" }, String(n));
+  if (key && once("count:" + key)) countUp(el, 0, n, { duration: 800, delay: 350 });
+  return el;
+}
+
 /**
  * The four colored answers.
  * opts: { onPick(i), chosen, correctIndex, counts }
@@ -320,7 +527,7 @@ export function optionGrid(options, opts = {}) {
       const inner = [
         h("span", { class: "shape" }, icon(OPTION_SHAPES[i])),
         h("span", { class: "answer-text" }, text),
-        revealed && opts.counts ? h("span", { class: "answer-count", title: "Players who chose this" }, String(opts.counts[i] || 0)) : null,
+        revealed && opts.counts ? countSpan(opts.counts[i] || 0, opts.animKey ? `${opts.animKey}:${i}` : null) : null,
         revealed && i === opts.correctIndex ? h("span", { class: "tick", title: "Correct answer" }, icon("check")) : null,
       ];
       return opts.onPick

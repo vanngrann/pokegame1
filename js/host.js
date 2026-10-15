@@ -9,6 +9,7 @@ import {
   h, requireUser, startTimers, timerBar, toast, leaderboardView, teamTotalsView,
   avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
   store, stayConnected, loadWatchdog,
+  animatedLeaderboard, displayScores, countUp, signedFormat, stagger, confetti, once,
 } from "./common.js";
 import { BANK } from "./questions.js";
 import {
@@ -169,7 +170,9 @@ function patchCounts() {
   if (!el || !room) return;
   const exp = expectedAnswerers();
   const done = exp.filter((id) => answers.has(id)).length;
-  el.textContent = room.status === "final-wager" ? `${done} / ${exp.length} wagers locked in` : `${done} / ${exp.length} answered`;
+  const text = room.status === "final-wager" ? `${done} / ${exp.length} wagers locked in` : `${done} / ${exp.length} answered`;
+  if (el.textContent && el.textContent !== text) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
+  el.textContent = text;
 }
 
 function checkAllAnswered() {
@@ -275,6 +278,9 @@ async function applyDeltas({ deltas = {}, flags = {} }, roomFields, { accumulate
   // When a question follows a wildcard, keep the ranks from the start of the turn
   // and add this step's gains to the wildcard's, so the leaderboard shows the whole turn.
   const prevRanks = accumulate && room.prevRanks ? room.prevRanks : rankMap();
+  const prevScores = accumulate && room.prevScores
+    ? room.prevScores
+    : Object.fromEntries(playerList().map((p) => [p.id, p.score || 0]));
   const gains = accumulate ? { ...(room.gains || {}) } : {};
   for (const [uid, d] of Object.entries(deltas)) {
     if (!d || !players.has(uid)) continue;
@@ -284,7 +290,7 @@ async function applyDeltas({ deltas = {}, flags = {} }, roomFields, { accumulate
   for (const [uid, f] of Object.entries(flags)) {
     if (players.has(uid)) batch.update(playerRef(uid), f);
   }
-  batch.update(roomRef, { ...roomFields, prevRanks, gains });
+  batch.update(roomRef, { ...roomFields, prevRanks, prevScores, gains });
   await batch.commit();
 }
 
@@ -332,7 +338,7 @@ async function startGame() {
     categories: built.categories, board: built.board,
     turnOrder: order, turn: 0, pickerUid: order[0],
     current: null, reveal: null, wild: null, final: null, tiebreak: null,
-    prevRanks: {}, gains: {},
+    prevRanks: {}, gains: {}, prevScores: null,
   });
   await batch.commit();
 }
@@ -357,7 +363,10 @@ async function pickCell(cellId) {
   const def = WILDCARDS[wildType];
   const wild = { type: wildType, by, cellId, stage: def.needs ? "choose" : "done", summary: null, wheelIndex: null, spinAt: null };
   if (def.needs) {
-    await updateDoc(roomRef, { status: "wild", board, pickerUid: by, wild, current: null, reveal: null, gains: {}, prevRanks: rankMap() });
+    await updateDoc(roomRef, {
+      status: "wild", board, pickerUid: by, wild, current: null, reveal: null,
+      gains: {}, prevRanks: rankMap(), prevScores: Object.fromEntries(playerList().map((p) => [p.id, p.score || 0])),
+    });
   } else {
     const res = resolveWild(wildType, wildContext(by));
     await applyDeltas(res, { status: "wild", board, pickerUid: by, wild: { ...wild, summary: res.summary }, current: null, reveal: null });
@@ -566,9 +575,9 @@ function render() {
   if (!room) return;
   if (frozen) return;
   const r = plain(room);
-  const ps = playerList().map((p) => ({
+  const ps = displayScores(playerList().map((p) => ({
     id: p.id, name: p.name || "Trainer", score: p.score || 0, team: p.team || null, photo: p.photo || "", doubleNext: !!p.doubleNext,
-  }));
+  })), r);
   const key = JSON.stringify({ r, ps });
   if (key === lastKey) return patchCounts();
   lastKey = key;
@@ -751,7 +760,7 @@ function revealView(r, ps) {
         return h("li", null, avatar(p), h("span", { class: "name" }, p.name),
           h("span", { class: "muted small" }, `Wagered ${res.wager.toLocaleString()}`),
           res.correct ? badge("check", "Right", "badge-good") : badge("cross", "Wrong", "badge-bad"),
-          h("span", { class: `gain ${res.gained > 0 ? "plus" : res.gained < 0 ? "minus" : ""}` }, signed(res.gained)));
+          h("span", { class: `gain ${res.gained > 0 ? "plus" : res.gained < 0 ? "minus" : ""}`, "data-value": String(res.gained) }, signed(res.gained)));
       })), more(sorted.length - shown.length));
   } else {
     const right = ps.filter((p) => results[p.id]?.correct).sort((a, b) => results[b.id].gained - results[a.id].gained);
@@ -765,8 +774,17 @@ function revealView(r, ps) {
         p.id === fastest ? badge("bolt", "Fastest") : null,
         p.id === c.pickerUid ? badge("target", "Picker bonus") : null,
         results[p.id].doubled ? badge("swords", "Doubled") : null,
-        h("span", { class: "gain plus" }, `+${results[p.id].gained}`)))) : null,
+        h("span", { class: "gain plus", "data-value": String(results[p.id].gained) }, `+${results[p.id].gained}`)))) : null,
       more(right.length - shown.length));
+  }
+
+  // Result rows slide in one after another and their points count up (first time only).
+  if (detail && once(`reveal:${code}:${isFinal ? `g${r.game}final` : c.round}`)) {
+    detail.querySelectorAll(".result-list").forEach((ul) => { stagger(ul); ul.classList.add("entering"); });
+    detail.querySelectorAll(".result-list .gain").forEach((el, i) => {
+      const target = Number(el.dataset.value);
+      if (Number.isFinite(target)) countUp(el, 0, target, { delay: 300 + i * 80, duration: 700, format: signedFormat });
+    });
   }
 
   return h("div", { class: "question-screen reveal-screen" },
@@ -776,19 +794,24 @@ function revealView(r, ps) {
         h("p", { class: "q-category" }, isFinal ? r.final.category : c.category),
         h("p", { class: "muted" }, "Answer revealed"))),
     h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
-    optionGrid(options, { correctIndex: rv.correctIndex, counts: rv.counts }),
+    optionGrid(options, { correctIndex: rv.correctIndex, counts: rv.counts, animKey: `${code}:${isFinal ? "final" : c.round}` }),
     h("section", { class: "panel" }, detail),
     h("div", { class: "host-footer" }, h("span"), btn(isFinal ? "Final standings" : "Leaderboard", () => transition(next))));
 }
 
 // ----- Leaderboard -----
+/** Identifies one turn's score change, so its animation plays once. */
+const turnKey = (r) => `${code}:${r.game}:${r.qCount}:${r.wild?.cellId || ""}:${r.status === "final-reveal" || r.final?.wagers ? "final" : ""}`;
 function leaderboardScreen(r, ps) {
   const left = (r.board || []).filter((c) => !c.used).length;
   const tm = r.settings?.mode === "teams";
   return h("div", { class: "leaderboard-screen" },
     h("h2", { class: "center" }, "Leaderboard"),
-    tm ? h("section", { class: "panel" }, teamTotalsView(ps, r.settings.teamCount)) : null,
-    h("section", { class: "panel" }, leaderboardView(ps, { prevRanks: r.prevRanks, gains: r.gains, showTeams: tm, limit: 10, twoCol: true })),
+    tm ? h("section", { class: "panel" }, teamTotalsView(ps, r.settings.teamCount, { prevScores: r.prevScores, animKey: turnKey(r) })) : null,
+    h("section", { class: "panel" }, animatedLeaderboard(ps, {
+      prevRanks: r.prevRanks, prevScores: r.prevScores, gains: r.gains, animKey: turnKey(r),
+      showTeams: tm, limit: 10, twoCol: true,
+    })),
     h("div", { class: "host-footer" },
       h("span", { class: "muted" }, left ? `${left} card${left === 1 ? "" : "s"} left on the board` : "Board cleared!"),
       endGameButton(),
@@ -904,7 +927,10 @@ function podiumView(r, ps) {
   const order = [top[1], top[0], top[2]].filter(Boolean);
   const tm = r.settings?.mode === "teams";
 
-  return h("div", { class: "podium-screen center" },
+  const fresh = once(`podium:${code}:${r.game}:${r.tiebreak?.winner || ""}`);
+  if (fresh && !tied && top.length) setTimeout(() => confetti(90), 1500);
+
+  return h("div", { class: `podium-screen center${fresh ? " rising" : ""}` },
     h("h2", null, tied ? "It’s a tie for first!" : "Final standings"),
     tm && ps.length ? h("section", { class: "panel" }, teamTotalsView(ps, r.settings.teamCount)) : null,
     h("div", { class: "podium" }, order.map((p) => h("div", { class: `podium-spot place-${p.rank}` },

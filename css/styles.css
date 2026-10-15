@@ -1015,6 +1015,113 @@ body:not(.host):not(.player) .hero h1 { font-size: clamp(2.2rem, min(11vw, 7dvh)
   body:not(.host):not(.player) .btn { margin-top: 8px; }
 }
 
+
+/* =========================================================
+   Motion
+   Points count up, gains fly into totals, leaderboard rows
+   glide to their new places. All of it is skipped for people
+   who ask their device for reduced motion.
+   ========================================================= */
+
+/* A number finishing its count gives a small bump */
+.counted { display: inline-block; animation: tick 0.35s ease-out; }
+@keyframes tick { 40% { transform: scale(1.18); } }
+
+/* Countdown: last five seconds */
+.big-count.urgent { border-color: var(--bad); color: var(--bad); animation: urgent 1s ease-in-out infinite; }
+@keyframes urgent { 50% { transform: scale(1.1); } }
+
+/* "3 / 8 answered" bumps as answers arrive */
+#answer-count.bump { display: inline-block; animation: tick 0.35s ease-out; }
+
+/* Answers */
+.answer.chosen { animation: chosen 0.3s cubic-bezier(0.2, 1.4, 0.4, 1); }
+@keyframes chosen { from { transform: scale(0.94); } }
+.answer-grid.revealed .answer.correct { animation: correct 0.7s cubic-bezier(0.2, 1.3, 0.4, 1) 0.15s both; }
+@keyframes correct { 0% { transform: scale(1); } 40% { transform: scale(1.04); } 100% { transform: scale(1.015); } }
+.answer-grid.revealed .answer.dim { transition: opacity 0.5s ease 0.1s, filter 0.5s ease 0.1s; }
+
+/* Host reveal: rows slide in one after another */
+.result-list.entering li { animation: slide-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1) both; animation-delay: calc(var(--i, 0) * 80ms + 250ms); }
+@keyframes slide-in { from { opacity: 0; transform: translateX(-18px); } }
+
+/* Phone: the points you won fly into your total */
+.total-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.total-wrap { position: relative; display: inline-flex; align-items: center; }
+.total-num { font: 800 1.5rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.fly {
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%;
+  margin-top: -0.55em;
+  white-space: nowrap;
+  font: 800 1.1rem/1 var(--font-display);
+  opacity: 0;
+  pointer-events: none;
+}
+.fly.plus { color: var(--good); }
+.fly.minus { color: var(--bad); }
+.fly.go { animation: fly 1.6s cubic-bezier(0.5, 0, 0.3, 1) 0.6s both; }
+@keyframes fly {
+  0% { opacity: 0; transform: translateX(-24px) scale(0.8); }
+  25% { opacity: 1; transform: translateX(0) scale(1.15); }
+  65% { opacity: 1; transform: translateX(0) scale(1.15); }
+  100% { opacity: 0; transform: translateX(56px) scale(0.5); }
+}
+.big-rank.pop { animation: rank-pop 0.5s cubic-bezier(0.2, 1.5, 0.4, 1); }
+@keyframes rank-pop { from { transform: scale(0.6); opacity: 0.3; } }
+
+/* Leaderboard rows */
+.leaderboard li { position: relative; }
+.leaderboard .gain:empty { display: none; }
+.leaderboard .move:empty { display: none; }
+.leaderboard .gain.pop { animation: gain-pop 0.45s cubic-bezier(0.2, 1.5, 0.4, 1); }
+@keyframes gain-pop { from { opacity: 0; transform: translateY(8px) scale(0.6); } }
+.leaderboard li.rose { animation: rose 1.6s ease-out 0.2s; }
+@keyframes rose {
+  0%, 100% { box-shadow: none; }
+  30% { box-shadow: 0 0 0 3px var(--yellow), 0 8px 24px -6px rgba(255, 210, 0, 0.55); }
+}
+.leaderboard li.me.rose { animation-name: rose-me; }
+@keyframes rose-me { 30% { box-shadow: inset 0 0 0 2px var(--yellow), 0 0 0 3px var(--yellow), 0 8px 24px -6px rgba(255, 210, 0, 0.55); } }
+.leaderboard li.enter { animation: slide-in 0.5s ease both 0.3s; }
+
+/* Podium rises 3rd, 2nd, then 1st */
+.podium-screen.rising .podium-block { transform-origin: bottom; animation: rise 0.7s cubic-bezier(0.2, 1.1, 0.35, 1) both; }
+.podium-screen.rising .podium-spot > :not(.podium-block) { animation: drop 0.5s cubic-bezier(0.2, 1.3, 0.4, 1) both; }
+.podium-screen.rising .place-3 .podium-block { animation-delay: 0.2s; }
+.podium-screen.rising .place-2 .podium-block { animation-delay: 0.6s; }
+.podium-screen.rising .place-1 .podium-block { animation-delay: 1s; }
+.podium-screen.rising .place-3 > :not(.podium-block) { animation-delay: 0.6s; }
+.podium-screen.rising .place-2 > :not(.podium-block) { animation-delay: 1s; }
+.podium-screen.rising .place-1 > :not(.podium-block) { animation-delay: 1.45s; }
+@keyframes rise { from { transform: scaleY(0); } }
+@keyframes drop { from { opacity: 0; transform: translateY(-24px); } }
+
+/* Confetti */
+.confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 60; }
+.confetti i {
+  position: absolute;
+  top: -16px;
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  animation-name: fall;
+  animation-timing-function: cubic-bezier(0.3, 0.5, 0.6, 1);
+  animation-fill-mode: forwards;
+}
+@keyframes fall {
+  to { transform: translate(var(--drift, 0), 105vh) rotate(var(--spin, 360deg)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

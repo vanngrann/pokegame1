@@ -137,6 +137,7 @@ Push the folder to a GitHub repo (with `index.html` at the root), then Settings 
 - The host screen always uses the dark navy "stage" so it reads well on a TV. Phones follow the device's light or dark setting.
 - Fonts are Bricolage Grotesque (headings, numbers, room codes) and Figtree (everything else), loaded from Google Fonts.
 - Brand colors, answer-tile colors and corner sizes are tokens at the top of `css/styles.css`.
+- **Animations:** points count up on phones and fly into each player's total, and leaderboards open in the old order before rows glide to their new places (players who climbed get a glow). Answer counts tick up on the reveal, the countdown pulses for the last five seconds, the podium rises 3rd, 2nd, then 1st, and confetti falls for the winner. Each animation plays once per turn, so a screen redraw never replays it. Everything is skipped on devices set to reduce motion. The timings live in `animatedLeaderboard()` and `countUp()` in `js/common.js` and the "Motion" section of `css/styles.css`.
 
 ## Leaving and coming back
 
