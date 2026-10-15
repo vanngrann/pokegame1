@@ -948,7 +948,41 @@ body.host .leaderboard .score { font-size: clamp(1.1rem, 3dvh, 1.5rem); }
 .settings select.input { min-height: clamp(40px, 6dvh, 50px); }
 .field-row { display: flex; justify-content: space-between; align-items: baseline; }
 .setting-value { font: 800 1.3rem var(--font-display); color: var(--primary); }
-.range { width: 100%; accent-color: var(--primary); height: 28px; margin: 0; }
+.stepper-row { align-items: center; gap: 12px; margin-bottom: 4px; }
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.stepper-btn {
+  width: 40px;
+  height: 38px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 800 1.3rem/1 var(--font-display);
+  cursor: pointer;
+}
+.stepper-btn:hover:not(:disabled) { background: var(--surface-2); }
+.stepper-btn:active:not(:disabled) { background: var(--yellow); color: var(--navy-deep); }
+.stepper-btn:disabled { opacity: 0.3; cursor: default; }
+.stepper-value {
+  width: 3.2ch;
+  border: 0;
+  border-inline: 2px solid var(--line);
+  height: 38px;
+  background: transparent;
+  color: var(--primary);
+  font: 800 1.25rem/1 var(--font-display);
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.stepper-value::-webkit-outer-spin-button, .stepper-value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper-value:focus { outline: none; background: var(--surface-2); }
 .type-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .type-chip {
   display: inline-flex;

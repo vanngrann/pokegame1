@@ -630,15 +630,26 @@ function lobbyView(r, ps) {
     class: "input", onchange: (e) => updateSetting(key, key === "mode" ? e.target.value : Number(e.target.value)),
   }, values.map((v) => h("option", { value: String(v), selected: s[key] === v }, labelFn(v))));
 
-  // Wildcard count: the number updates while dragging, the setting saves on release.
+  // Wildcard count: a stepper (minus / number / plus). The number can also be typed.
   const total = boardSize(BANK);
   const wildCount = wildcardCountOf(s, BANK);
-  const countLabel = h("strong", { class: "setting-value" }, String(wildCount));
+  const setCount = (n) => {
+    const v = Math.max(0, Math.min(total, Math.round(Number(n) || 0)));
+    countInput.value = String(v);
+    if (v !== wildCount) updateSetting("wildcardCount", v);
+  };
+  const countInput = h("input", {
+    class: "stepper-value", type: "number", inputmode: "numeric", min: 0, max: total, step: 1,
+    "aria-label": "Number of wildcards",
+  });
+  countInput.value = String(wildCount);
+  countInput.addEventListener("change", () => setCount(countInput.value));
+  countInput.addEventListener("keydown", (e) => { if (e.key === "Enter") countInput.blur(); });
+  const stepper = h("div", { class: "stepper" },
+    h("button", { type: "button", class: "stepper-btn", "aria-label": "One fewer wildcard", disabled: wildCount <= 0, onclick: () => setCount(wildCount - 1) }, "\u2212"),
+    countInput,
+    h("button", { type: "button", class: "stepper-btn", "aria-label": "One more wildcard", disabled: wildCount >= total, onclick: () => setCount(wildCount + 1) }, "+"));
   const countHint = h("span", { class: "muted small" }, wildHint(wildCount, total));
-  const slider = h("input", { type: "range", class: "range", min: 0, max: total, step: 1, "aria-label": "Number of wildcards" });
-  slider.value = String(wildCount);
-  slider.addEventListener("input", () => { countLabel.textContent = slider.value; countHint.textContent = wildHint(Number(slider.value), total); });
-  slider.addEventListener("change", () => updateSetting("wildcardCount", Number(slider.value)));
 
   const enabled = enabledWildTypes(s);
   const typeChips = h("div", { class: "type-chips", role: "group", "aria-label": "Wildcards that can appear" },
@@ -666,8 +677,7 @@ function lobbyView(r, ps) {
         ? h("label", { class: "field" }, h("span", null, "Time per question"), select("seconds", [15, 20, 30, 45], (v) => `${v} seconds`))
         : null),
     h("div", { class: "field" },
-      h("div", { class: "field-row" }, h("span", null, "Wildcards on the board"), countLabel),
-      slider,
+      h("div", { class: "field-row stepper-row" }, h("span", null, "Wildcards on the board"), stepper),
       countHint),
     wildCount > 0 ? h("div", { class: "field" }, h("span", null, "Wildcards that can appear"), typeChips) : null);
 
