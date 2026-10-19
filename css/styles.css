@@ -1050,6 +1050,75 @@ body:not(.host):not(.player) .hero h1 { font-size: clamp(2.2rem, min(11vw, 7dvh)
 }
 
 
+
+/* =========================================================
+   Card pictures (from TCGdex)
+   "art" crops a card to its illustration so the name, HP and
+   text stay hidden. Tune the window below if crops look off.
+   ========================================================= */
+.card-visual { display: flex; justify-content: center; flex: none; animation: pop 0.35s ease; }
+.card-visual img { display: block; }
+.card-visual.full img {
+  height: clamp(110px, 26dvh, 260px);
+  width: auto;
+  aspect-ratio: 600 / 825;
+  border-radius: 4.5% / 3.3%;
+  box-shadow: var(--shadow-lg);
+  background: var(--surface-2);
+}
+.card-visual.art .crop {
+  /* window onto a standard card: 84% wide, 45% tall, starting 8% in and 11% down */
+  --art-top: 0.11;
+  --art-left: 0.08;
+  --art-width: 0.84;
+  --art-height: 0.45;
+  position: relative;
+  overflow: hidden;
+  height: clamp(90px, 22dvh, 220px);
+  aspect-ratio: 1.336;
+  border-radius: 12px;
+  border: 3px solid var(--yellow);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-lg);
+}
+.card-visual.art .crop img {
+  position: absolute;
+  max-width: none;
+  width: calc(100% / var(--art-width));
+  left: calc(-100% * var(--art-left) / var(--art-width));
+  top: calc(-100% * var(--art-top) / var(--art-height));
+}
+
+/* Big screen: picture on the left, question and answers on the right */
+.q-body.with-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(16px, 3vw, 40px);
+  min-height: 0;
+}
+.q-body.with-card .q-main { min-width: 0; }
+body.host .q-body.with-card .prompt { margin-top: 0; }
+body.host .card-visual.full img { height: clamp(180px, 50dvh, 520px); }
+body.host .card-visual.art .crop { height: auto; width: clamp(220px, 32vw, 520px); }
+body.host .reveal-screen .card-visual.full img { height: clamp(150px, 42dvh, 440px); }
+body.host .reveal-screen .card-visual.art .crop { width: clamp(180px, 26vw, 420px); }
+body.host .with-card .answer-grid { grid-template-columns: 1fr 1fr; }
+
+/* Phones: picture above the question. It takes whatever height is left after the
+   question and answers, so the screen never needs scrolling. */
+body.player .stack > .card-visual {
+  flex: 1 1 0;
+  min-height: 56px;
+  max-height: 26dvh;
+  margin-top: 2px;
+}
+body.player .stack > .card-visual.full img { height: 100%; }
+body.player .stack > .card-visual.art .crop { height: 100%; }
+.answer-panel:has(.card-visual) { display: flex; align-items: center; gap: 16px; text-align: left; }
+.card-visual.small.full img { height: clamp(90px, 18dvh, 150px); }
+.card-visual.small.art .crop { height: clamp(70px, 13dvh, 120px); }
+
 /* =========================================================
    Motion
    Points count up, gains fly into totals, leaderboard rows

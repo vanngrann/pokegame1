@@ -9,9 +9,10 @@ import {
   h, requireUser, startTimers, timerBar, toast, leaderboardView, teamTotalsView,
   avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
   store, stayConnected, loadWatchdog,
-  animatedLeaderboard, displayScores, countUp, signedFormat, stagger, confetti, once,
+  animatedLeaderboard, displayScores, countUp, signedFormat, stagger, confetti, once, cardVisual,
 } from "./common.js";
 import { BANK } from "./questions.js";
+import { findCard, warmImage, withTimeout } from "./cards.js";
 import {
   DEFAULT_SETTINGS, TEAMS, WILDCARDS, WHEEL, FINAL_SECONDS, TIEBREAK_SECONDS, SPIN_MS, ANSWER_GRACE_MS,
   buildBoard, optionsFor, scoreCorrect, resolveWild, rankPlayers, makeRoomCode, shuffle,
@@ -322,6 +323,11 @@ async function startGame() {
   secret = { cells: built.cells, current: null, final: null };
   await saveSecret();
 
+  // Warm up the card pictures in the background so questions open instantly.
+  [...BANK.categories.flatMap((cat) => cat.questions), BANK.final].forEach((q) => {
+    if (q?.card) findCard(q.card).then((c) => c && warmImage(c.base));
+  });
+
   const batch = writeBatch(db);
   const teamCounts = list.map((p) => ({ ...p }));
   for (const p of teamCounts) {
@@ -374,6 +380,19 @@ async function pickCell(cellId) {
 }
 
 /**
+ * Looks up a question's card picture (preloaded at game start, so usually instant).
+ * Gives up after a moment so a slow card database never holds up the game.
+ */
+async function pictureFor(q) {
+  if (!q.card) return null;
+  const found = await withTimeout(findCard(q.card), 2500);
+  return found ? { base: found.base, name: found.name, mode: q.card.mode || "card" } : null;
+}
+
+/** Pictures shown while answering; "reveal" pictures stay hidden until the answer is out. */
+const publicPicture = (pic) => (pic && pic.mode !== "reveal" ? pic : null);
+
+/**
  * Shows the question on a card. When it follows a wildcard, the leaderboard
  * afterwards shows the whole turn (wildcard + question) together.
  */
@@ -384,7 +403,8 @@ async function startQuestion(cellId, by, { board, turnGains }) {
   const { options, correctIndex } = optionsFor(q);
   const qCount = (room.qCount || 0) + 1;
   const round = `g${room.game}q${qCount}`;
-  secret.current = { round, correctIndex, answer: q.answer };
+  const picture = await pictureFor(q);
+  secret.current = { round, correctIndex, answer: q.answer, picture };
   await saveSecret();
   await updateDoc(roomRef, {
     status: "question", ...(board ? { board } : {}), qCount, pickerUid: by, reveal: null,
@@ -392,7 +412,7 @@ async function startQuestion(cellId, by, { board, turnGains }) {
     current: {
       round, cellId, category: cat.name, note: cat.note || null, points: cell.points,
       prompt: q.prompt, options, pickerUid: by, seconds: room.settings.seconds || 20,
-      afterWild: !!turnGains, startedAt: serverTimestamp(),
+      afterWild: !!turnGains, picture: publicPicture(picture), startedAt: serverTimestamp(),
     },
   });
 }
@@ -428,7 +448,7 @@ async function closeQuestion() {
 
   await applyDeltas({ deltas, flags }, {
     status: "reveal",
-    reveal: { correctIndex, answer: secret.current.answer, counts, results },
+    reveal: { correctIndex, answer: secret.current.answer, counts, results, picture: secret.current.picture || null },
   }, { accumulate: !!c.afterWild });
 }
 
@@ -487,7 +507,7 @@ async function next() {
 async function startFinal() {
   if (!BANK.final) return updateDoc(roomRef, { status: "podium" });
   const { options, correctIndex } = optionsFor(BANK.final);
-  secret.final = { options, correctIndex, answer: BANK.final.answer };
+  secret.final = { options, correctIndex, answer: BANK.final.answer, picture: await pictureFor(BANK.final) };
   await saveSecret();
   await updateDoc(roomRef, {
     status: "final-wager", pickerUid: null, current: null, reveal: null, wild: null,
@@ -505,7 +525,7 @@ async function showFinalQuestion() {
   }
   await updateDoc(roomRef, {
     status: "final-question",
-    final: { category: BANK.final.category, prompt: BANK.final.prompt, options: secret.final.options, wagers },
+    final: { category: BANK.final.category, prompt: BANK.final.prompt, options: secret.final.options, wagers, picture: publicPicture(secret.final.picture) },
     current: { round: `g${room.game}f`, seconds: FINAL_SECONDS, startedAt: serverTimestamp() },
   });
 }
@@ -528,7 +548,7 @@ async function closeFinal() {
     if (gained) deltas[p.id] = gained;
     results[p.id] = { choice, correct, wager, gained };
   }
-  await applyDeltas({ deltas }, { status: "final-reveal", reveal: { correctIndex, answer, counts, results } });
+  await applyDeltas({ deltas }, { status: "final-reveal", reveal: { correctIndex, answer, counts, results, picture: secret.final.picture || null } });
 }
 
 // ---------- Tiebreaker ----------
@@ -706,7 +726,7 @@ function lobbyView(r, ps) {
       h("p", { class: "join-url" }, siteUrl),
       h("p", { class: "room-code", "aria-label": `Room code ${code.split("").join(" ")}` }, code.split("").map((ch) => h("span", null, ch))),
       h("img", { class: "qr", src: qr, alt: "QR code to join", width: "240", height: "240", onerror: (e) => { e.target.hidden = true; } }),
-      h("p", { class: "disclaimer" }, "Fan-made and not affiliated with Nintendo, The Pokémon Company, Creatures or GAME FREAK.")),
+      h("p", { class: "disclaimer" }, "Fan-made and not affiliated with Nintendo, The Pokémon Company, Creatures or GAME FREAK. Card images from TCGdex.")),
     h("div", { class: "lobby-side" },
       h("section", { class: "panel" },
         h("h3", null, icon("users"), `Players (${ps.length})`),
@@ -743,11 +763,18 @@ function questionView(r, ps) {
       h("span", { class: "countdown big-count", dataset: { deadline: String(deadline), total: String(total) } })),
     timerBar(deadline, total),
     c.note ? h("p", { class: "muted small center" }, c.note) : null,
-    h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
-    optionGrid(isFinal ? r.final.options : c.options),
+    withPicture(cardVisual(isFinal ? r.final.picture : c.picture, "question"),
+      h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
+      optionGrid(isFinal ? r.final.options : c.options)),
     h("div", { class: "host-footer" },
       h("span", { id: "answer-count", class: "muted" }),
       btn("Reveal now", closeCurrent, "btn-ghost")));
+}
+
+/** Puts a card picture beside the question and answers (or just returns them without one). */
+function withPicture(visual, ...content) {
+  if (!visual) return content;
+  return h("div", { class: "q-body with-card" }, visual, h("div", { class: "q-main" }, ...content));
 }
 
 // ----- Reveal (board + final) -----
@@ -803,8 +830,9 @@ function revealView(r, ps) {
       h("div", { class: "q-head-text" },
         h("p", { class: "q-category" }, isFinal ? r.final.category : c.category),
         h("p", { class: "muted" }, "Answer revealed"))),
-    h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
-    optionGrid(options, { correctIndex: rv.correctIndex, counts: rv.counts, animKey: `${code}:${isFinal ? "final" : c.round}` }),
+    withPicture(cardVisual(rv.picture, "reveal"),
+      h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
+      optionGrid(options, { correctIndex: rv.correctIndex, counts: rv.counts, animKey: `${code}:${isFinal ? "final" : c.round}` })),
     h("section", { class: "panel" }, detail),
     h("div", { class: "host-footer" }, h("span"), btn(isFinal ? "Final standings" : "Leaderboard", () => transition(next))));
 }

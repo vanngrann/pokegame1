@@ -6,7 +6,7 @@ import {
 import {
   h, requireUser, startTimers, timerBar, toast, store, leaderboardView, teamTotalsView,
   avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass, stayConnected, loadWatchdog,
-  animatedLeaderboard, displayScores, countUp, signedFormat, confetti, once,
+  animatedLeaderboard, displayScores, countUp, signedFormat, confetti, once, cardVisual,
 } from "./common.js";
 import { TEAMS, WILDCARDS, FINAL_MIN_WAGER, rankPlayers, smallestTeam, opponentsOf, clampWager, maxWager } from "./game.js";
 
@@ -370,6 +370,7 @@ function questionView(m) {
       !isFinal && c.pickerUid === m.meId ? badge("target", "Your pick: bonus if right") : null,
       !isFinal && mine.doubleNext ? badge("swords", "Double points") : null),
     timerBar(deadline, total),
+    cardVisual(isFinal ? r.final?.picture : c.picture, "question"),
     h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
     optionGrid(isFinal ? r.final.options : c.options, {
       onPick: answered ? null : (i) => submitAnswer(m.round, { choice: i }),
@@ -405,7 +406,9 @@ function revealView(m) {
     meBar(m),
     result,
     gained ? pointsFlow(m, gained, `${turnKey(r)}:${m.meId}`) : null,
-    h("section", { class: "panel center" }, h("p", { class: "muted small" }, "The answer was"), h("p", { class: "answer-text-big" }, r.reveal?.answer || "")));
+    h("section", { class: "panel center answer-panel" },
+      cardVisual(r.reveal?.picture, "reveal", "small"),
+      h("div", null, h("p", { class: "muted small" }, "The answer was"), h("p", { class: "answer-text-big" }, r.reveal?.answer || ""))));
 }
 
 // ----- Leaderboard -----

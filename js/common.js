@@ -2,6 +2,7 @@
 import { watchAuth, logOut, reconnect } from "./firebase.js";
 import { TEAMS, OPTION_SHAPES, rankPlayers, teamTotals } from "./game.js";
 import { icon, cardEmblem } from "./icons.js";
+import { imageUrl } from "./cards.js";
 
 export { icon };
 
@@ -470,6 +471,28 @@ export function teamTotalsView(players, teamCount, opts = {}) {
         h("div", { class: "team-bar" }, bar),
         num);
     }));
+}
+
+// ---------- Card pictures ----------
+/**
+ * A question's card picture for the given phase ("question" or "reveal").
+ * Artwork mode crops to the illustration so the name, HP and text stay hidden.
+ * If the image fails to load, the picture quietly removes itself.
+ */
+export function cardVisual(picture, phase, cls = "") {
+  if (!picture?.base) return null;
+  const mode = picture.mode || "card";
+  const full = phase === "question" ? mode === "card" : ["art", "card", "reveal"].includes(mode);
+  const art = phase === "question" ? mode === "art" || mode === "art-only" : mode === "art-only";
+  if (!full && !art) return null;
+  const drop = (e) => e.target.closest(".card-visual")?.remove();
+  const img = h("img", {
+    src: imageUrl(picture.base), decoding: "async", onerror: drop,
+    alt: full ? picture.name || "Pokémon card" : "Card artwork",
+  });
+  return full
+    ? h("div", { class: `card-visual full ${cls}`.trim() }, img)
+    : h("div", { class: `card-visual art ${cls}`.trim() }, h("div", { class: "crop" }, img));
 }
 
 // ---------- Board + answers ----------

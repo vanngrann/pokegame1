@@ -100,6 +100,7 @@ trainer-trivia/
 │   ├── index.js          the start page
 │   ├── common.js         shared helpers (leaderboards, board, timers)
 │   ├── icons.js          the SVG icons (wildcards, answer shapes, badges)
+│   ├── cards.js          looks up card pictures in the TCGdex card database
 │   ├── firebase.js       Firebase connection
 │   └── firebase-config.js  your Firebase keys
 ├── firestore.rules       database security rules (paste into Firebase)
@@ -138,6 +139,28 @@ Push the folder to a GitHub repo (with `index.html` at the root), then Settings 
 - Fonts are Bricolage Grotesque (headings, numbers, room codes) and Figtree (everything else), loaded from Google Fonts.
 - Brand colors, answer-tile colors and corner sizes are tokens at the top of `css/styles.css`.
 - **Animations:** points count up on phones and fly into each player's total, and leaderboards open in the old order before rows glide to their new places (players who climbed get a glow). Answer counts tick up on the reveal, the countdown pulses for the last five seconds, the podium rises 3rd, 2nd, then 1st, and confetti falls for the winner. Each animation plays once per turn, so a screen redraw never replays it. Everything is skipped on devices set to reduce motion. The timings live in `animatedLeaderboard()` and `countUp()` in `js/common.js` and the "Motion" section of `css/styles.css`.
+
+## Card pictures
+
+Some questions show a real Pokémon card, pulled from the free [TCGdex](https://tcgdex.dev) card database. A question opts in with a `card` line in `js/questions.js`, and its `mode` decides what players see, so a picture never gives the answer away:
+
+| Mode | While answering | On the reveal | Used for |
+|---|---|---|---|
+| `art` | Artwork only (name, HP and text hidden) | The full card | Who's That Pokémon? |
+| `art-only` | Artwork only | Artwork only | Type Trouble and the final round (full cards print TCG weaknesses, which can differ from the video-game type chart) |
+| `card` | The full card | The full card | Moonbreon, the VMAX question, Professor's Research |
+| `reveal` | Nothing | The full card | Evolution Puzzles answers |
+
+```js
+card: { name: "Garchomp", mode: "art" },   // a random printing of any card with this exact name
+card: { id: "swsh7-215", mode: "card" },   // one specific card: TCGdex set id + card number
+```
+
+- **When cards load:** the host looks up all the cards when a game starts, so pictures appear instantly. Players' phones get the picture through the room and never contact the card database themselves.
+- **If a lookup fails:** when the database is slow or unreachable, or a name doesn't match, the question simply shows without a picture. The game never waits more than about 2.5 seconds.
+- **Card names must match exactly,** including capitals and punctuation (`"Umbreon VMAX"`, `"Professor's Research"`). If a picture never shows up, check the spelling against the card's name on tcgdex.dev.
+- **Name lookups pick a random printing,** so the same question can show different art each game. TCG Pocket cards are skipped because their layout is different.
+- **If artwork crops look off** (some full-art or older cards frame their art differently), adjust the `--art-*` values in the "Card pictures" section of `css/styles.css`.
 
 ## Leaving and coming back
 
