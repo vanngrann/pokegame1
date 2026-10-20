@@ -179,6 +179,9 @@ body.host .topbar { background: transparent; box-shadow: none; position: static;
 .eyebrow { font-weight: 600; font-size: 0.95rem; color: var(--muted); margin-bottom: 6px; }
 
 /* ---------- Buttons + inputs ---------- */
+/* No double-tap zoom on controls: removes the tap delay and stray zooms mid-game */
+button, a, input, select, label { touch-action: manipulation; }
+.answer, .board-cell, .team-btn, .stepper-btn { -webkit-user-select: none; user-select: none; }
 .btn {
   display: flex;
   align-items: center;
@@ -468,6 +471,15 @@ body:not(.host) .board-head { color: var(--navy); border-color: var(--navy); }
   border-radius: 7px;
 }
 .emblem { width: auto; height: 46%; max-width: 60%; color: var(--yellow); }
+/* Face-down cards show their value over a faint emblem. Higher values are harder. */
+.board-cell .card-frame .emblem { position: absolute; height: 78%; max-width: 86%; opacity: 0.22; }
+.card-value {
+  position: relative;
+  font: 800 clamp(1.1rem, 2.6vw, 2.4rem)/1 var(--font-display);
+  color: var(--yellow);
+  letter-spacing: -0.02em;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
+}
 /* foil sheen, only when the card can be picked */
 .board-cell::after {
   content: "";
@@ -502,7 +514,8 @@ button.board-cell:disabled { cursor: default; }
 .board.compact .board-head { font-size: 0.6rem; font-weight: 700; padding: 0 1px 5px; border-bottom-width: 2px; min-height: 2.8em; }
 .board.compact .board-cell { aspect-ratio: 5 / 7; border-width: 2px; border-radius: 7px; }
 .board.compact .card-frame { inset: 3px; border-radius: 4px; border-width: 1px; }
-.board.compact .emblem { height: 40%; }
+.board.compact .board-cell .card-frame .emblem { height: 70%; }
+.board.compact .card-value { font-size: clamp(0.62rem, 3.1vw, 0.95rem); letter-spacing: -0.03em; }
 .board.compact .used-points { font-size: 0.75rem; }
 .board.compact .board-cell.used { border-width: 1.5px; }
 
@@ -1118,6 +1131,88 @@ body.player .stack > .card-visual.art .crop { height: 100%; }
 .answer-panel:has(.card-visual) { display: flex; align-items: center; gap: 16px; text-align: left; }
 .card-visual.small.full img { height: clamp(90px, 18dvh, 150px); }
 .card-visual.small.art .crop { height: clamp(70px, 13dvh, 120px); }
+
+/* Connection notice ("Reconnecting…" / "Back online") */
+.conn-notice {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  left: 50%;
+  z-index: 70;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.88rem;
+  box-shadow: var(--shadow-lg);
+  transform: translate(-50%, -160%);
+  transition: transform 0.25s ease;
+  pointer-events: none;
+}
+.conn-notice.show { transform: translate(-50%, 0); }
+.conn-notice.down { background: var(--yellow); color: var(--navy-deep); }
+.conn-notice.ok { background: var(--good); color: #fff; }
+
+/* Away players */
+.badge-away { background: var(--surface-2); color: var(--muted); }
+.leaderboard li.away, .manage-list li.away { opacity: 0.6; }
+.away-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--yellow) 22%, var(--surface));
+  border: 1.5px solid var(--yellow);
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.away-banner .icon { width: 1.3em; height: 1.3em; flex: none; }
+.away-banner.short { padding: 6px 12px; font-size: 0.82rem; }
+
+/* Host: manage players during a game */
+.host-tools { display: inline-flex; gap: 18px; align-items: center; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(2, 12, 28, 0.6);
+  animation: enter 0.2s ease;
+}
+.modal { width: min(640px, 100%); max-height: min(80dvh, 720px); overflow-y: auto; margin: 0; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.modal-head h2 { margin: 0; }
+.manage-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.manage-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.manage-list .name { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manage-list .score { font: 800 1rem var(--font-display); font-variant-numeric: tabular-nums; min-width: 5ch; text-align: right; }
+.btn-sm { min-height: 36px; padding: 6px 14px; font-size: 0.88rem; }
+
+/* Phone: answer locked in (the choice itself is never shown) */
+.locked-panel { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.locked-panel h2 { font-size: 1.4rem; margin: 0 0 4px; }
+.locked-panel p { margin: 0; }
+.lock-icon {
+  display: grid;
+  place-items: center;
+  width: clamp(64px, 12dvh, 92px);
+  height: clamp(64px, 12dvh, 92px);
+  margin-bottom: 12px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.lock-icon .icon { width: 46%; height: 46%; }
+.locked-panel.sent .lock-icon { background: var(--yellow); color: var(--navy-deep); animation: pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1); }
 
 /* =========================================================
    Motion

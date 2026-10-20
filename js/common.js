@@ -100,6 +100,7 @@ export function renderUserChip(user) {
  */
 export function stayConnected(onResume) {
   let wakeLock = null;
+  let hiddenAt = 0;
   const keepAwake = async () => {
     try {
       if ("wakeLock" in navigator && document.visibilityState === "visible" && !wakeLock) {
@@ -108,39 +109,98 @@ export function stayConnected(onResume) {
       }
     } catch { /* not supported or not allowed: fine */ }
   };
-  const resume = async () => {
-    await reconnect();
+  const resume = async (force) => {
+    // A quick app switch keeps a healthy connection, so only reconnect after a longer
+    // absence, a network change, or when the connection is known to be down.
+    if (force || !connection.live) await reconnect();
     onResume?.();
     keepAwake();
   };
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resume(); });
-  window.addEventListener("online", resume);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+    resume(hiddenAt && Date.now() - hiddenAt > 20000);
+  });
+  window.addEventListener("online", () => resume(true));
+  window.addEventListener("offline", () => setLive(false));
   window.addEventListener("focus", keepAwake);
   window.addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
   keepAwake();
   return resume;
 }
 
+// ---------- Connection status ----------
+// Pages report each live update's status here (Firestore says whether data came from the
+// server or only from what the phone had saved). A small "Reconnecting…" notice appears
+// after a few seconds without the server, and the connection is reset if it stays down.
+export const connection = { live: true };
+let downSince = 0;
+let noticeTimer = null;
+let kickTimer = null;
+let lastKick = 0;
+
+function notice(text, cls) {
+  let el = $("conn-notice");
+  if (!el) {
+    el = h("div", { id: "conn-notice", class: "conn-notice", role: "status", "aria-live": "polite" });
+    document.body.append(el);
+  }
+  el.className = `conn-notice show ${cls}`;
+  el.textContent = text;
+}
+
+export function setLive(live) {
+  if (live) {
+    clearTimeout(noticeTimer);
+    clearTimeout(kickTimer);
+    const el = $("conn-notice");
+    if (!connection.live && el?.classList.contains("show")) {
+      notice("Back online", "ok");
+      setTimeout(() => el.classList.remove("show"), 1500);
+    }
+    connection.live = true;
+    downSince = 0;
+    return;
+  }
+  if (!connection.live) return;
+  connection.live = false;
+  downSince = Date.now();
+  noticeTimer = setTimeout(() => { if (!connection.live) notice("Reconnecting…", "down"); }, 3000);
+  kickTimer = setTimeout(() => {
+    // Still down after 20 seconds: reset the connection (at most every 30 seconds).
+    if (!connection.live && Date.now() - lastKick > 30000) { lastKick = Date.now(); reconnect(); }
+  }, 20000);
+}
+
 /**
- * Watches for a page that never finishes loading: reconnects once, then reloads.
+ * Watches for a page that never finishes loading. Reconnects at 8 seconds and only reloads
+ * at 30 seconds, if the phone is online and the page is on screen (once per two minutes).
  * Call done() as soon as live data arrives.
  */
-export function loadWatchdog({ reconnectAfter = 6000, reloadAfter = 15000 } = {}) {
+export function loadWatchdog({ reconnectAfter = 8000, reloadAfter = 30000 } = {}) {
   let done = false;
+  const t0 = setTimeout(() => { if (!done) notice("Connecting…", "down"); }, 3000);
   const t1 = setTimeout(() => { if (!done) reconnect(); }, reconnectAfter);
   const t2 = setTimeout(() => {
     if (done) return;
-    // Reload at most twice in two minutes, so a real outage doesn't loop forever.
+    if (!navigator.onLine || document.visibilityState !== "visible") {
+      return notice("Waiting for a connection…", "down");
+    }
     const key = "tt-reloads";
     const now = Date.now();
     let recent = [];
     try { recent = JSON.parse(sessionStorage.getItem(key) || "[]").filter((t) => now - t < 120000); } catch { /* ignore */ }
-    if (recent.length >= 2) return toast("Still can’t reach the game. Check your connection, then refresh.");
+    if (recent.length >= 1) return notice("Still can’t reach the game. Check your connection, then refresh.", "down");
     recent.push(now);
     try { sessionStorage.setItem(key, JSON.stringify(recent)); } catch { /* ignore */ }
     location.reload();
   }, reloadAfter);
-  return () => { done = true; clearTimeout(t1); clearTimeout(t2); };
+  return () => {
+    if (done) return;
+    done = true;
+    clearTimeout(t0); clearTimeout(t1); clearTimeout(t2);
+    const el = $("conn-notice");
+    if (el?.classList.contains("show") && connection.live) el.classList.remove("show");
+  };
 }
 
 // ---------- Small storage wrapper (never throws) ----------
@@ -319,13 +379,14 @@ export function leaderboardView(players, opts = {}) {
       const gain = opts.gains?.[p.id] || 0;
       const prev = opts.prevRanks?.[p.id];
       const moved = prev ? prev - p.rank : 0;
-      return h("li", { class: [p.id === opts.me ? "me" : "", p.rank <= 3 ? `top top-${p.rank}` : ""].join(" ").trim() || null },
+      return h("li", { class: [p.id === opts.me ? "me" : "", p.rank <= 3 ? `top top-${p.rank}` : "", p.away ? "away" : ""].join(" ").trim() || null },
         h("span", { class: "rank" }, p.rank),
         avatar(p),
         h("span", { class: "name" },
           opts.showTeams ? teamDot(p.team) : null,
           p.name || "Trainer",
-          p.doubleNext ? badge("swords", "", "badge-icon") : null),
+          p.doubleNext ? badge("swords", "", "badge-icon") : null,
+          p.away ? badge("clock", "Away", "badge-away") : null),
         moved > 0 ? h("span", { class: "move up", title: `Up ${moved}` }, icon("up"), moved)
           : moved < 0 ? h("span", { class: "move down", title: `Down ${-moved}` }, icon("down"), -moved) : null,
         gain ? h("span", { class: `gain ${gain > 0 ? "plus" : "minus"}` }, signed(gain)) : null,
@@ -344,10 +405,11 @@ function boardRow(p, opts, score, rank) {
   const rankEl = h("span", { class: "rank" }, rank);
   const gainEl = h("span", { class: "gain" });
   const moveEl = h("span", { class: "move" });
-  const li = h("li", { class: [p.id === opts.me ? "me" : "", rank <= 3 ? `top top-${rank}` : ""].join(" ").trim() || null },
+  const li = h("li", { class: [p.id === opts.me ? "me" : "", rank <= 3 ? `top top-${rank}` : "", p.away ? "away" : ""].join(" ").trim() || null },
     rankEl, avatar(p),
     h("span", { class: "name" }, opts.showTeams ? teamDot(p.team) : null, p.name || "Trainer",
-      p.doubleNext ? badge("swords", "", "badge-icon") : null),
+      p.doubleNext ? badge("swords", "", "badge-icon") : null,
+      p.away ? badge("clock", "Away", "badge-away") : null),
     moveEl, gainEl, scoreEl);
   return { li, rankEl, scoreEl, gainEl, moveEl };
 }
@@ -473,6 +535,30 @@ export function teamTotalsView(players, teamCount, opts = {}) {
     }));
 }
 
+// ---------- Safe taps ----------
+/**
+ * Click handlers for game buttons that ignore accidental taps. A tap only counts if it
+ *  - started on this same button (a screen redraw mid-tap can't redirect it), and
+ *  - started at least `readyMs` after the button appeared (the tap that picked a board
+ *    card can't also land on the answer that takes its place).
+ * Keyboard presses (Enter / Space) count once the button has been visible briefly.
+ * Spread the result into the button's props: h("button", { ...safeTap(fn) }, ...)
+ */
+export function safeTap(fn, { readyMs = 400 } = {}) {
+  const born = performance.now();
+  let downAt = 0;
+  return {
+    onpointerdown: () => { downAt = performance.now(); },
+    onclick: (e) => {
+      const now = performance.now();
+      if (e.detail === 0) { if (now - born >= readyMs) fn(e); return; } // keyboard
+      const ok = downAt && downAt - born >= readyMs && now - downAt < 2500;
+      downAt = 0;
+      if (ok) fn(e);
+    },
+  };
+}
+
 // ---------- Card pictures ----------
 /**
  * A question's card picture for the given phase ("question" or "reveal").
@@ -481,7 +567,7 @@ export function teamTotalsView(players, teamCount, opts = {}) {
  */
 export function cardVisual(picture, phase, cls = "") {
   if (!picture?.base) return null;
-  const mode = picture.mode || "card";
+  const mode = picture.mode || "art";
   const full = phase === "question" ? mode === "card" : ["art", "card", "reveal"].includes(mode);
   const art = phase === "question" ? mode === "art" || mode === "art-only" : mode === "art-only";
   if (!full && !art) return null;
@@ -520,9 +606,9 @@ export function boardGrid(categories, board, onPick, opts = {}) {
       } else {
         grid.append(h("button", {
           class: "board-cell", type: "button", disabled: !onPick,
-          "aria-label": `${categories[col]}, card ${row + 1}`,
-          onclick: onPick ? () => onPick(cell.id) : null,
-        }, h("span", { class: "card-frame" }, cardEmblem())));
+          "aria-label": `${categories[col]}, ${cell.value ? cell.value + " points" : "card " + (row + 1)}`,
+          ...(onPick ? safeTap(() => onPick(cell.id)) : {}),
+        }, h("span", { class: "card-frame" }, cardEmblem(), h("span", { class: "card-value" }, String(cell.value ?? "")))));
       }
     }
   }
@@ -554,7 +640,7 @@ export function optionGrid(options, opts = {}) {
         revealed && i === opts.correctIndex ? h("span", { class: "tick", title: "Correct answer" }, icon("check")) : null,
       ];
       return opts.onPick
-        ? h("button", { class: cls.join(" "), type: "button", onclick: () => opts.onPick(i) }, inner)
+        ? h("button", { class: cls.join(" "), type: "button", ...safeTap(() => opts.onPick(i)) }, inner)
         : h("div", { class: cls.join(" ") }, inner);
     }));
 }

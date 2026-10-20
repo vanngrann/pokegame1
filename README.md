@@ -6,8 +6,18 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
 
 1. **The host** opens the site on a laptop or TV and clicks **Create a room**. The screen shows a 4-letter code and a QR code.
 2. **Players** open the site on their phones (or scan the QR code), enter the code and a name.
-3. The host picks **Everyone for themselves** or **Teams** (2 to 4 teams), the time per question, **how many of the 36 cards also carry a wildcard** (0 to 36), and **which wildcard types** can appear, then starts.
-4. **Players take turns picking** a face-down card from the board. Columns are categories, and questions get harder further down each column, but **point values are random** (100–500) and hidden until the card flips.
+3. The host picks **Everyone for themselves** or **Teams** (2 to 4 teams), the time per question, **how many of the 35 cards also carry a wildcard** (0 to 35), and **which wildcard types** can appear, then starts.
+4. **Players take turns picking** a face-down card from the board. Columns are categories and rows are difficulty, and **each card shows its value**: the higher the value, the harder the question.
+
+   | Value | Difficulty |
+   |---|---|
+   | 100 | Very easy |
+   | 200 | Easy |
+   | 300 | Medium |
+   | 400 | Hard |
+   | 500 | Very hard |
+
+   Wildcards stay hidden until the card flips. The board has 7 columns: 5 categories from the question bank plus **Card Spotter** and **Price Check**, which are built fresh from the card database every game (see below). The bank has 6 categories, so one sits out each game, taking turns (the host's browser remembers who sat out last).
 5. **Everyone answers every question** on their phone. A correct answer earns:
    - the card's points,
    - plus up to **25% extra for speed**,
@@ -28,8 +38,8 @@ A live Pokémon party-trivia game: a Jeopardy-style board on a shared screen, Ka
    | Earthquake | Every opponent loses 100 |
 
    Scores never drop below 0. In team mode, "opponents" means players on other teams.
-8. When the board is cleared, the **final round** starts. Everyone sees the category, secretly wagers, then answers. Right wins the wager; wrong loses it. Everyone can wager up to 500 even with a low score, and a wrong answer never takes a score below 0.
-9. If first place is tied, the host can run a **tiebreaker**: the closest number guess wins.
+8. When the board is cleared, the **final round** starts with one of 7 hard questions, picked at random each game. Everyone sees the category, secretly wagers, then answers. Right wins the wager; wrong loses it. Everyone can wager up to 500 even with a low score, and a wrong answer never takes a score below 0.
+9. If first place is tied, the host can run a **tiebreaker**: the closest number guess wins. If it's still tied, the next tiebreaker uses a different question.
 
 In team mode, every player still answers on their own phone and takes their own turns picking. The team score is the sum of its members' scores.
 
@@ -101,6 +111,7 @@ trainer-trivia/
 │   ├── common.js         shared helpers (leaderboards, board, timers)
 │   ├── icons.js          the SVG icons (wildcards, answer shapes, badges)
 │   ├── cards.js          looks up card pictures in the TCGdex card database
+│   ├── generated.js      builds the Card Spotter and Price Check columns each game
 │   ├── firebase.js       Firebase connection
 │   └── firebase-config.js  your Firebase keys
 ├── firestore.rules       database security rules (paste into Firebase)
@@ -126,9 +137,10 @@ Push the folder to a GitHub repo (with `index.html` at the root), then Settings 
 
 ## Customizing
 
-- **Questions:** edit `js/questions.js`. Each question needs a `prompt`, the right `answer`, and exactly three `wrong` answers. Answer order is shuffled every game. The board has one card per question: 6 categories of 6 questions makes 36 cards, which fits a TV best. Categories can have any number of questions.
-- **Scoring:** change `SPEED_BONUS`, `PICKER_BONUS`, `POINT_VALUES`, `STEAL_AMOUNT` and the timer lengths at the top of `js/game.js`.
+- **Questions:** edit `js/questions.js`. Each question needs a `level` (1 to 5, which sets its value: 1 = 100 very easy up to 5 = 500 very hard), a `prompt`, the right `answer`, and exactly three `wrong` answers. Answer order is shuffled every game. Each game picks **one question per level from every category**, so a category can hold as many questions as you like: write several per level and the board changes from game to game. If a level is missing, the nearest level fills in. Up to 5 categories play each game; any beyond that take turns sitting out, so adding a seventh or eighth category is fine.
+- **Scoring:** change `SPEED_BONUS`, `PICKER_BONUS`, `pointsFor` (points per level), `STEAL_AMOUNT` and the timer lengths at the top of `js/game.js`.
 - **Default settings:** `DEFAULT_SETTINGS` at the top of `js/game.js` (the host can change them in the lobby).
+- **Final round and tiebreakers:** the `finals` and `tiebreakers` lists at the bottom of `js/questions.js`. Add as many as you like; one final is picked each game. Finals should be the hardest questions in the game. Tiebreaker answers must be whole numbers.
 - **Final-round minimum wager:** `FINAL_MIN_WAGER` in `js/game.js`.
 - **Wildcards and the wheel:** edit `WILDCARDS` and `WHEEL` in `js/game.js`. A new wildcard type also needs a `case` in `resolveWild()`.
 - **Teams:** names and colors are in `TEAMS` in `js/game.js`.
@@ -146,27 +158,64 @@ Some questions show a real Pokémon card, pulled from the free [TCGdex](https://
 
 | Mode | While answering | On the reveal | Used for |
 |---|---|---|---|
-| `art` | Artwork only (name, HP and text hidden) | The full card | Who's That Pokémon? |
+| `art` (default) | Artwork only (name, HP, attacks and text hidden) | The full card | Who's That Pokémon?, the VMAX and Professor's Research questions, Moonbreon |
 | `art-only` | Artwork only | Artwork only | Type Trouble and the final round (full cards print TCG weaknesses, which can differ from the video-game type chart) |
-| `card` | The full card | The full card | Moonbreon, the VMAX question, Professor's Research |
+| `card` | The full card | The full card | Nothing yet. Full cards print the name, HP, attacks, weakness, rule boxes and set number, so only use it when the question is about none of those |
 | `reveal` | Nothing | The full card | Evolution Puzzles answers |
 
 ```js
 card: { name: "Garchomp", mode: "art" },   // a random printing of any card with this exact name
-card: { id: "swsh7-215", mode: "card" },   // one specific card: TCGdex set id + card number
+card: { id: "swsh7-215", mode: "art" },    // one specific card: TCGdex set id + card number
 ```
 
 - **When cards load:** the host looks up all the cards when a game starts, so pictures appear instantly. Players' phones get the picture through the room and never contact the card database themselves.
 - **If a lookup fails:** when the database is slow or unreachable, or a name doesn't match, the question simply shows without a picture. The game never waits more than about 2.5 seconds.
 - **Card names must match exactly,** including capitals and punctuation (`"Umbreon VMAX"`, `"Professor's Research"`). If a picture never shows up, check the spelling against the card's name on tcgdex.dev.
 - **Name lookups pick a random printing,** so the same question can show different art each game. TCG Pocket cards are skipped because their layout is different.
+### Card Spotter
+
+This column is made from the card database when the host presses **Start game** (the button shows "Shuffling cards..." for a moment). Every game gets new cards:
+
+| Value | Question | Picture shown |
+|---|---|---|
+| 100 | Who's that Pokémon? (a household name, like Pikachu or Snorlax) | Artwork only |
+| 200 | Name the Pokémon on this card (a fan favorite, like Ampharos or Corviknight) | Artwork only |
+| 300 | Which series is this card from? (Scarlet & Violet, Sword & Shield, Sun & Moon, XY or Black & White) | Full card |
+| 400 | Which set is this card from? (wrong answers come from the same series) | Full card |
+| 500 | Who illustrated this card? | Artwork only (the full card prints the artist) |
+
+- The Pokémon lists are at the top of `js/generated.js`; edit them freely, using exact card names.
+- If the database is slow or unreachable, the game waits at most 7 seconds, then any missing question is swapped for a hand-written card question of the same level. The game always starts.
+
+### Price Check
+
+The last column shows a full card and asks **"About how much does this card sell for, raw?"** The price is the card's **TCGplayer market price, ungraded, in US dollars**, as reported by TCGdex (the host screen shows the source and month under the question). Graded (PSA) prices aren't available for free, so they aren't used.
+
+The four answers are listed lowest to highest, and the difficulty comes from how close together they are:
+
+| Value | Answers are this far apart | Example |
+|---|---|---|
+| 100 | 10 times | $0.60, $6, $60, $600 |
+| 200 | 5 times | $4.25, $21, $105, $525 |
+| 300 | 3 times | $9, $27, $81, $245 |
+| 400 | 2 times | $23, $45, $90, $180 |
+| 500 | 1.5 times | $27, $41, $61, $91 |
+
+- Cards come from a list of chase cards (Charizard ex, Umbreon VMAX, Iono and others) plus the Pokémon lists, all at the top of `js/generated.js`. Bulk cards under $1 are avoided, since they would always be the lowest answer.
+- To make the column easier or harder, change `PRICE_STEP` in `js/generated.js`.
+- Prices change daily, so the same card can have a different answer next week. If the database has no price for a card, another card is tried, and if none turns up, a hand-written question about card prices fills in.
+
 - **If artwork crops look off** (some full-art or older cards frame their art differently), adjust the `--art-*` values in the "Card pictures" section of `css/styles.css`.
 
 ## Leaving and coming back
 
+- **Away players:** anyone who misses 2 questions in a row is marked **away** (`AWAY_AFTER` in `js/game.js`). The game stops waiting for them before revealing, their turn to pick is skipped, and their phone shows how to get back in. Answering any question makes them active again. Leaderboards show them faded with an "Away" tag.
+- **Removing players:** during a game, the host's **Players** button (bottom of the board, question and leaderboard screens) lists everyone with Playing / Away and a **Remove** button. Removed players lose their points. They see "You're not in this game" and can join again as a new player if they come back. If the player whose turn it is leaves or goes away, the turn passes to the next active player.
+
 - **Players:** if a phone closes the page, locks, or loses signal, opening the site again shows a **Rejoin game** card on the start page, and the same `play.html?code=...` link drops them straight back in. Their score and any answer they already locked in are kept.
 - **Host:** opening `host.html` again returns to the room you were running, unless that game already finished. The start page also shows **Back to my room**. **Create a room** always starts a fresh one.
-- **No more manual refreshes:** when a phone or the host tab comes back on screen or regains signal, the page reconnects and catches up on its own. A page that hasn't loaded after 15 seconds reloads itself (at most twice in two minutes). Screens are kept awake during a game where the browser allows it.
+- **Connection trouble is handled quietly:** if a phone or the host loses the server for more than 3 seconds, a small **Reconnecting…** notice appears at the top, then **Back online** when it recovers. After 20 seconds offline the connection is reset. A page that hasn't loaded reconnects at 8 seconds and reloads itself only at 30 seconds, if it's online and on screen (once every two minutes at most). Coming back from another app reconnects only after an absence of 20 seconds or more. Screens are kept awake during a game where the browser allows it.
+- **Nobody gets "kicked" by a bad connection:** a phone only shows "You're not in this game" once the server confirms the player was removed. A shaky connection can briefly show an incomplete player list, which used to look like a kick.
 - **Keep the host tab on screen.** It runs the timers. If it's hidden, browsers slow it down; when it comes back, any question whose time ran out closes right away.
 - **After you publish an update,** GitHub Pages can serve the old files for up to about 10 minutes. If something looks out of date right after a deploy, do a hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on Mac).
 

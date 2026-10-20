@@ -5,10 +5,10 @@ import {
 } from "./firebase.js";
 import {
   h, requireUser, startTimers, timerBar, toast, store, leaderboardView, teamTotalsView,
-  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass, stayConnected, loadWatchdog,
-  animatedLeaderboard, displayScores, countUp, signedFormat, confetti, once, cardVisual,
+  avatar, teamDot, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass, stayConnected, loadWatchdog, setLive,
+  animatedLeaderboard, displayScores, countUp, signedFormat, confetti, once, cardVisual, safeTap,
 } from "./common.js";
-import { TEAMS, WILDCARDS, FINAL_MIN_WAGER, rankPlayers, smallestTeam, opponentsOf, clampWager, maxWager } from "./game.js";
+import { TEAMS, WILDCARDS, FINAL_MIN_WAGER, AWAY_AFTER, rankPlayers, smallestTeam, opponentsOf, clampWager, maxWager } from "./game.js";
 
 const app = document.getElementById("app");
 
@@ -26,6 +26,7 @@ let myRef = null;
 let room = null;
 let players = new Map();
 let playersLoaded = false;
+let playersConfirmed = false; // latest player list came from the server, not the phone's saved copy
 let lastKey = "";
 let pendingAction = null;       // shows "sending…" after a pick/target/spin
 let pendingTimer = null;
@@ -122,39 +123,35 @@ function subscribe() {
   // Remember this game so the start page can offer "Rejoin" if the player leaves.
   store.set("tt-last-room", { code, at: Date.now() });
 
-  onSnapshot(roomRef, (snap) => {
+  // includeMetadataChanges: also tells us when data is only from the phone's saved copy
+  // (fromCache), which is how we know the connection to the server is down.
+  onSnapshot(roomRef, { includeMetadataChanges: true }, (snap) => {
+    setLive(!snap.metadata.fromCache);
+    if (!snap.exists()) {
+      if (snap.metadata.fromCache) return; // not confirmed by the server yet
+      loaded();
+      return message("The game has ended", "The host closed this room.", true);
+    }
     loaded();
-    if (!snap.exists()) return message("The game has ended", "The host closed this room.", true);
     const before = stageKey(room);
     room = snap.data({ serverTimestamps: "estimate" });
     if (stageKey(room) !== before) clearPending();
     render();
   }, (e) => { console.error(e); message("Lost connection", "Refresh the page to reconnect.", true); });
 
-  onSnapshot(collection(db, "rooms", code, "players"), (snap) => {
+  onSnapshot(collection(db, "rooms", code, "players"), { includeMetadataChanges: true }, (snap) => {
     players = new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+    // Only trust "you're not in the player list" when the server confirms it. A shaky
+    // connection can briefly show an incomplete saved list, which used to look like a kick.
+    playersConfirmed = !snap.metadata.fromCache;
     playersLoaded = true;
     render();
   });
 
   startTimers();
 
-  // Coming back to the tab or regaining signal: reconnect and redraw instead of needing a refresh.
+  // Coming back to the tab after a while or regaining signal: reconnect and redraw.
   stayConnected(() => { lastKey = ""; render(true); });
-
-  // If a question is still showing well after its time ran out, the live connection is
-  // probably stuck. Reconnect once for that question.
-  let nudged = null;
-  setInterval(() => {
-    if (!room || !["question", "final-question", "tiebreak"].includes(room.status)) return;
-    const r = activeRound(plain(room));
-    const seen = local.seen[r];
-    const secs = room.status === "tiebreak" ? room.tiebreak?.seconds || 30 : room.current?.seconds || 20;
-    if (seen && nudged !== r && Date.now() > seen + secs * 1000 + 8000) {
-      nudged = r;
-      reconnect();
-    }
-  }, 3000);
 }
 
 const stageKey = (r) => (r ? [r.status, r.current?.round, r.wild?.stage, r.pickerUid].join("|") : "");
@@ -231,6 +228,7 @@ function render(force = false) {
   if (!room || !playersLoaded) return;
   if (frozen) return;
   if (!players.has(me.uid)) {
+    if (!playersConfirmed) return; // keep the current screen until the server confirms
     lastKey = "removed";
     return app.replaceChildren(h("div", { class: "panel center" },
       h("h2", null, "You’re not in this game"),
@@ -249,6 +247,7 @@ function render(force = false) {
     r,
     ps: displayScores([...players.values()].map((p) => ({
       id: p.id, name: p.name || "Trainer", score: p.score || 0, team: p.team || null, photo: p.photo || "", doubleNext: !!p.doubleNext,
+      away: !!p.away,
     })), r),
     meId: me.uid,
     round,
@@ -273,6 +272,15 @@ let shownScore = null;
 
 /** Turn id, so each turn's animations play once. */
 const turnKey = (r) => `${code}:${r.game}:${r.qCount}:${r.wild?.cellId || ""}:${r.status.startsWith("final") ? "final" : ""}`;
+
+/** Tells a player they've been marked away and how to get back in. */
+function awayBanner(m, short = false) {
+  if (!mePlayer(m).away) return null;
+  return h("div", { class: `away-banner${short ? " short" : ""}`, role: "status" }, icon("clock"),
+    h("span", null, short
+      ? "You’re marked away. Answer this one to jump back in."
+      : `You were marked away after missing ${AWAY_AFTER} questions. Answer the next question to jump back in.`));
+}
 
 function meBar(m) {
   const ranked = rankPlayers(m.ps);
@@ -344,11 +352,12 @@ function boardView(m) {
   const canPick = picking && !m.pending;
   return h("div", { class: "stack" },
     meBar(m),
+    awayBanner(m),
     picking
       ? h("div", { class: "banner you" }, m.pending ? "Flipping your card…" : "Your turn! Pick a card.")
       : h("div", { class: "banner" }, `${nameOf(m, m.r.pickerUid)} is picking a card…`),
     boardGrid(m.r.categories, m.r.board, canPick ? (cellId) => sendAction("pick", { cellId }) : null, { compact: true }),
-    picking ? h("p", { class: "muted small center" }, "Points are hidden until a card flips, and some cards are wildcards.") : null);
+    picking ? h("p", { class: "muted small center" }, "Higher values are harder. Some cards hide a wildcard.") : null);
 }
 
 // ----- Question (board + final) -----
@@ -364,19 +373,27 @@ function questionView(m) {
 
   return h("div", { class: "stack" },
     meBar(m),
+    answered ? null : awayBanner(m, true),
     h("div", { class: "q-meta" },
       h("span", { class: "chip" }, isFinal ? r.final.category : c.category),
       isFinal ? h("span", { class: "chip chip-accent" }, `Wager ${wager.toLocaleString()}`) : h("span", { class: "chip chip-accent" }, `${c.points} points`),
       !isFinal && c.pickerUid === m.meId ? badge("target", "Your pick: bonus if right") : null,
       !isFinal && mine.doubleNext ? badge("swords", "Double points") : null),
     timerBar(deadline, total),
-    cardVisual(isFinal ? r.final?.picture : c.picture, "question"),
+    // Once answered, the answer tiles disappear so nobody nearby can copy the pick.
+    answered ? null : cardVisual(isFinal ? r.final?.picture : c.picture, "question"),
     h("h2", { class: promptClass(isFinal ? r.final.prompt : c.prompt) }, isFinal ? r.final.prompt : c.prompt),
-    optionGrid(isFinal ? r.final.options : c.options, {
-      onPick: answered ? null : (i) => submitAnswer(m.round, { choice: i }),
-      chosen: answered ? m.mine : null,
-    }),
-    answered ? h("p", { class: "locked center" }, m.sent ? [icon("check"), "Locked in. Waiting for everyone else."] : "Sending your answer…") : null);
+    answered
+      ? lockedPanel(m.sent)
+      : optionGrid(isFinal ? r.final.options : c.options, { onPick: (i) => submitAnswer(m.round, { choice: i }) }));
+}
+
+/** Shown after answering: confirms the answer is in without showing what it was. */
+function lockedPanel(sent, what = "answer") {
+  return h("section", { class: `panel center locked-panel fill${sent ? " sent" : ""}` },
+    h("div", { class: "lock-icon" }, icon(sent ? "lock" : "clock")),
+    h("h2", null, sent ? `Your ${what} is locked in` : `Sending your ${what}…`),
+    h("p", { class: "muted" }, sent ? "It stays hidden until the reveal, so no peeking." : "Hang on a second."));
 }
 
 // ----- Reveal (board + final) -----
@@ -459,10 +476,10 @@ function wildView(m) {
     parts.push(h("h3", null, "Who do you want to rob?"),
       h("div", { class: "target-list" }, opp.map((p) => h("button", {
         class: "btn btn-ghost", type: "button", disabled: !!m.pending,
-        onclick: () => sendAction("target", { targetUid: p.id }),
+        ...safeTap(() => sendAction("target", { targetUid: p.id })),
       }, avatar(p), h("span", { class: "grow" }, p.name), h("span", { class: "muted" }, `${p.score.toLocaleString()} points`)))));
   } else if (mineToAct && w.type === "wheel") {
-    parts.push(h("button", { class: "btn btn-primary btn-lg spin-btn", type: "button", disabled: !!m.pending, onclick: () => sendAction("spin") }, icon("wheel"), "Spin the wheel"));
+    parts.push(h("button", { class: "btn btn-primary btn-lg spin-btn", type: "button", disabled: !!m.pending, ...safeTap(() => sendAction("spin")) }, icon("wheel"), "Spin the wheel"));
   } else if (w.stage === "choose") {
     parts.push(h("p", { class: "muted" }, `Waiting for ${nameOf(m, w.by)}…`));
   } else if (w.stage === "spinning") {
@@ -518,7 +535,7 @@ function finalWagerView(m) {
         h("button", { class: "btn btn-ghost btn-inline", type: "button", onclick: () => setWager(max) }, "All in")),
       h("button", {
         class: "btn btn-primary btn-lg", type: "button",
-        onclick: () => submitAnswer(m.round, { value: clampWager(wagerDraft, max) }),
+        ...safeTap(() => submitAnswer(m.round, { value: clampWager(wagerDraft, max) })),
       }, "Lock in wager")));
 }
 
@@ -551,8 +568,7 @@ function tiebreakView(m) {
   const total = (tb.seconds || 30) * 1000;
   const deadline = (m.seen || Date.now()) + total;
   if (m.mine !== undefined) {
-    return h("div", { class: "stack" }, meBar(m), h("section", { class: "panel center" },
-      h("p", null, "Your guess:"), h("p", { class: "big-rank" }, String(m.mine)), h("p", { class: "muted" }, "Waiting for the reveal…")));
+    return h("div", { class: "stack" }, meBar(m), lockedPanel(m.sent, "guess"));
   }
   const input = h("input", { class: "input guess-input", type: "number", inputmode: "numeric", placeholder: "Your guess", "aria-label": "Your guess" });
   return h("div", { class: "stack" },

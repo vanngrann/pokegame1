@@ -8,14 +8,15 @@ import {
 import {
   h, requireUser, startTimers, timerBar, toast, leaderboardView, teamTotalsView,
   avatar, boardGrid, optionGrid, ordinal, plain, icon, badge, signed, promptClass,
-  store, stayConnected, loadWatchdog,
+  store, stayConnected, loadWatchdog, setLive,
   animatedLeaderboard, displayScores, countUp, signedFormat, stagger, confetti, once, cardVisual,
 } from "./common.js";
 import { BANK } from "./questions.js";
 import { findCard, warmImage, withTimeout } from "./cards.js";
+import { buildCardCategory, buildPriceCategory } from "./generated.js";
 import {
-  DEFAULT_SETTINGS, TEAMS, WILDCARDS, WHEEL, FINAL_SECONDS, TIEBREAK_SECONDS, SPIN_MS, ANSWER_GRACE_MS,
-  buildBoard, optionsFor, scoreCorrect, resolveWild, rankPlayers, makeRoomCode, shuffle,
+  DEFAULT_SETTINGS, TEAMS, WILDCARDS, WHEEL, FINAL_SECONDS, TIEBREAK_SECONDS, SPIN_MS, ANSWER_GRACE_MS, AWAY_AFTER,
+  buildBoard, pickDeck, chooseCategories, finalsOf, tiebreakersOf, optionsFor, scoreCorrect, resolveWild, rankPlayers, makeRoomCode, shuffle,
   clampWager, smallestTeam, opponentsOf, boardSize, wildcardCountOf, enabledWildTypes,
 } from "./game.js";
 
@@ -33,6 +34,7 @@ let code = "";
 let roomRef = null;
 let privRef = null;
 let room = null;            // live copy of rooms/{code}
+let starting = false;       // true while the Card Spotter column is being built
 let secret = null;          // hidden contents + answers: rooms/{code}/private/host (host-only)
 let players = new Map();    // id -> player doc
 let answers = new Map();    // uid -> answer doc for the active round
@@ -44,6 +46,7 @@ let allAnsweredTimer = null;
 let spinTimer = null;
 let lastKey = "";
 let fixingPlayers = false;
+let playersConfirmed = false; // player list came from the server, not the saved copy
 
 const playerRef = (uid) => doc(db, "rooms", code, "players", uid);
 const playerList = () => [...players.values()];
@@ -110,7 +113,9 @@ function subscribe() {
     }
   });
 
-  onSnapshot(roomRef, (snap) => {
+  onSnapshot(roomRef, { includeMetadataChanges: true }, (snap) => {
+    setLive(!snap.metadata.fromCache);
+    if (snap.metadata.fromCache && !snap.exists()) return; // not confirmed by the server yet
     loaded();
     if (!snap.exists()) return fatal("This room was deleted.");
     room = snap.data({ serverTimestamps: "estimate" });
@@ -121,8 +126,10 @@ function subscribe() {
     render();
   }, (e) => { console.error(e); fatal("Lost access to the room. Check the Firestore rules."); });
 
-  onSnapshot(collection(db, "rooms", code, "players"), (snap) => {
+  onSnapshot(collection(db, "rooms", code, "players"), { includeMetadataChanges: true }, (snap) => {
+    playersConfirmed = !snap.metadata.fromCache;
     players = new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+    renderPlayersModal();
     fixPlayers();
     checkAllAnswered();
     render();
@@ -161,17 +168,21 @@ function syncAnswers() {
   });
 }
 
+// Players the game waits for. Away players aren't waited on (they can still answer).
 function expectedAnswerers() {
   if (room?.status === "tiebreak") return (room.tiebreak?.uids || []).filter((id) => players.has(id));
-  return [...players.keys()];
+  return playerList().filter((p) => !p.away).map((p) => p.id);
 }
+const isActive = (id) => players.has(id) && !players.get(id).away;
 
 function patchCounts() {
   const el = document.getElementById("answer-count");
   if (!el || !room) return;
   const exp = expectedAnswerers();
   const done = exp.filter((id) => answers.has(id)).length;
-  const text = room.status === "final-wager" ? `${done} / ${exp.length} wagers locked in` : `${done} / ${exp.length} answered`;
+  const awayCount = room.status === "tiebreak" ? 0 : playerList().filter((p) => p.away).length;
+  const text = (room.status === "final-wager" ? `${done} / ${exp.length} wagers locked in` : `${done} / ${exp.length} answered`)
+    + (awayCount ? ` (${awayCount} away)` : "");
   if (el.textContent && el.textContent !== text) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
   el.textContent = text;
 }
@@ -241,7 +252,8 @@ async function transition(fn) {
 
 // Late joiners get a turn; in team mode everyone needs a team.
 function fixPlayers() {
-  if (!room || fixingPlayers) return;
+  // Never act on a possibly incomplete saved copy of the player list.
+  if (!room || fixingPlayers || !playersConfirmed) return;
   const writes = [];
   if (room.status !== "lobby" && Array.isArray(room.turnOrder)) {
     const missing = [...players.keys()].filter((id) => !room.turnOrder.includes(id));
@@ -258,6 +270,10 @@ function fixPlayers() {
       }
     }
     for (const [id, team] of Object.entries(fixes)) writes.push(updateDoc(playerRef(id), { team }));
+  }
+  // The player whose turn it is left, was removed or went away: pass the turn on.
+  if (room.status === "board" && !isActive(room.pickerUid) && playerList().some((p) => !p.away)) {
+    writes.push(updateDoc(roomRef, nextTurn()));
   }
   if (!writes.length) return;
   fixingPlayers = true;
@@ -317,21 +333,37 @@ async function startGame() {
   const list = playerList();
   if (!list.length) return toast("Wait for at least one player to join.");
   const settings = { ...DEFAULT_SETTINGS, ...room.settings };
-  const built = buildBoard(BANK, settings);
+  // One question per difficulty level from each category, plus the Card Spotter and
+  // Price Check columns built from the card database (hand-written questions if it is
+  // unreachable). With more than 5 categories, one sits out each game in rotation.
+  starting = true; lastKey = ""; render();
+  let made;
+  try { made = await Promise.all([buildCardCategory(), buildPriceCategory()]); } finally { starting = false; lastKey = ""; render(); }
+  if (room.status !== "lobby") return;
+  const recent = store.get("tt-sat-out", []);
+  const { play, satOut } = chooseCategories(BANK.categories, Array.isArray(recent) ? recent : []);
+  store.set("tt-sat-out", [...(Array.isArray(recent) ? recent : []), ...satOut].slice(-20));
+  const deck = [...pickDeck(play), ...made];
+  const built = buildBoard(deck, settings);
   const game = (room.game || 0) + 1;
 
-  secret = { cells: built.cells, current: null, final: null };
+  // This game's final question and tiebreaker order, picked now so a reload keeps them.
+  const finals = finalsOf(BANK);
+  const finalQ = finals.length ? finals[Math.floor(Math.random() * finals.length)] : null;
+  const tieOrder = shuffle(tiebreakersOf(BANK).map((_, i) => i));
+  secret = { cells: built.cells, notes: built.notes, finalQ, tieOrder, current: null, final: null };
   await saveSecret();
 
   // Warm up the card pictures in the background so questions open instantly.
-  [...BANK.categories.flatMap((cat) => cat.questions), BANK.final].forEach((q) => {
-    if (q?.card) findCard(q.card).then((c) => c && warmImage(c.base));
+  [...deck.flatMap((cat) => cat.questions), finalQ].forEach((q) => {
+    if (q?.picture?.base) warmImage(q.picture.base);
+    else if (q?.card) findCard(q.card).then((c) => c && warmImage(c.base));
   });
 
   const batch = writeBatch(db);
   const teamCounts = list.map((p) => ({ ...p }));
   for (const p of teamCounts) {
-    const fields = { score: 0, doubleNext: false };
+    const fields = { score: 0, doubleNext: false, missed: 0, away: false };
     if (settings.mode === "teams" && !TEAMS.slice(0, settings.teamCount).some((t) => t.id === p.team)) {
       p.team = smallestTeam(teamCounts.filter((q) => q !== p), settings.teamCount);
       fields.team = p.team;
@@ -384,9 +416,12 @@ async function pickCell(cellId) {
  * Gives up after a moment so a slow card database never holds up the game.
  */
 async function pictureFor(q) {
+  if (q.picture?.base) return q.picture; // Card Spotter questions carry their own picture
   if (!q.card) return null;
   const found = await withTimeout(findCard(q.card), 2500);
-  return found ? { base: found.base, name: found.name, mode: q.card.mode || "card" } : null;
+  // Artwork-only is the safe default: a full card can print the answer.
+  const mode = ["art", "art-only", "reveal", "card"].includes(q.card.mode) ? q.card.mode : "art";
+  return found ? { base: found.base, name: found.name, mode } : null;
 }
 
 /** Pictures shown while answering; "reveal" pictures stay hidden until the answer is out. */
@@ -398,8 +433,12 @@ const publicPicture = (pic) => (pic && pic.mode !== "reveal" ? pic : null);
  */
 async function startQuestion(cellId, by, { board, turnGains }) {
   const cell = secret.cells[cellId];
-  const cat = BANK.categories[cell.col];
-  const q = cat.questions[cell.qIndex];
+  // Newer boards keep the question on the cell; older ones point into the bank.
+  const q = cell.q || BANK.categories[cell.col]?.questions?.[cell.qIndex];
+  const cat = {
+    name: room.categories?.[cell.col] || BANK.categories[cell.col]?.name || "",
+    note: secret.notes?.[cell.col] ?? BANK.categories[cell.col]?.note ?? null,
+  };
   const { options, correctIndex } = optionsFor(q);
   const qCount = (room.qCount || 0) + 1;
   const round = `g${room.game}q${qCount}`;
@@ -410,7 +449,7 @@ async function startQuestion(cellId, by, { board, turnGains }) {
     status: "question", ...(board ? { board } : {}), qCount, pickerUid: by, reveal: null,
     ...(turnGains ? {} : { wild: null }),
     current: {
-      round, cellId, category: cat.name, note: cat.note || null, points: cell.points,
+      round, cellId, category: cat.name, note: q.note || cat.note || null, points: cell.points,
       prompt: q.prompt, options, pickerUid: by, seconds: room.settings.seconds || 20,
       afterWild: !!turnGains, picture: publicPicture(picture), startedAt: serverTimestamp(),
     },
@@ -446,6 +485,14 @@ async function closeQuestion() {
     results[uid] = { choice: a.choice, correct, gained, doubled: correct && !!p.doubleNext, ms: Math.max(0, (ms(a.at) || Date.now()) - start) };
   }
 
+  // Away detection: AWAY_AFTER missed questions in a row marks a player away;
+  // answering any question brings them back.
+  for (const p of playerList()) {
+    const missed = results[p.id] ? 0 : (p.missed || 0) + 1;
+    const away = missed >= AWAY_AFTER;
+    if (missed !== (p.missed || 0) || away !== !!p.away) flags[p.id] = { ...(flags[p.id] || {}), missed, away };
+  }
+
   await applyDeltas({ deltas, flags }, {
     status: "reveal",
     reveal: { correctIndex, answer: secret.current.answer, counts, results, picture: secret.current.picture || null },
@@ -476,11 +523,14 @@ async function finishWild({ target }) {
   await applyDeltas(res, { "wild.stage": "done", "wild.summary": res.summary, "wild.target": target || null });
 }
 
+/** The next player in turn order who's still here and not away (falls back to anyone here). */
 function nextTurn() {
   const order = room.turnOrder || [];
-  for (let i = 1; i <= order.length; i++) {
-    const t = ((room.turn || 0) + i) % order.length;
-    if (players.has(order[t])) return { turn: t, pickerUid: order[t] };
+  for (const ok of [isActive, (id) => players.has(id)]) {
+    for (let i = 1; i <= order.length; i++) {
+      const t = ((room.turn || 0) + i) % order.length;
+      if (ok(order[t])) return { turn: t, pickerUid: order[t] };
+    }
   }
   return { turn: 0, pickerUid: null };
 }
@@ -504,14 +554,30 @@ async function next() {
 }
 
 // ---------- Final round ----------
+/** This game's final question (picked at game start; older games fall back to the first). */
+const theFinal = () => secret?.finalQ || finalsOf(BANK)[0] || null;
+const hasFinal = () => !!theFinal();
+
+/** The tiebreaker for round n (1, 2, ...): a different one each time while they last. */
+function tiebreakerFor(n) {
+  const pool = tiebreakersOf(BANK);
+  if (!pool.length) return null;
+  const order = Array.isArray(secret?.tieOrder) && secret.tieOrder.length === pool.length ? secret.tieOrder : pool.map((_, i) => i);
+  return pool[order[(n - 1) % order.length]];
+}
+
 async function startFinal() {
-  if (!BANK.final) return updateDoc(roomRef, { status: "podium" });
-  const { options, correctIndex } = optionsFor(BANK.final);
-  secret.final = { options, correctIndex, answer: BANK.final.answer, picture: await pictureFor(BANK.final) };
+  const fq = theFinal();
+  if (!fq) return updateDoc(roomRef, { status: "podium" });
+  const { options, correctIndex } = optionsFor(fq);
+  secret.final = {
+    options, correctIndex, answer: fq.answer, category: fq.category, prompt: fq.prompt,
+    picture: await pictureFor(fq),
+  };
   await saveSecret();
   await updateDoc(roomRef, {
     status: "final-wager", pickerUid: null, current: null, reveal: null, wild: null,
-    final: { category: BANK.final.category },
+    final: { category: fq.category },
   });
 }
 
@@ -525,7 +591,10 @@ async function showFinalQuestion() {
   }
   await updateDoc(roomRef, {
     status: "final-question",
-    final: { category: BANK.final.category, prompt: BANK.final.prompt, options: secret.final.options, wagers, picture: publicPicture(secret.final.picture) },
+    final: {
+      category: secret.final.category ?? theFinal()?.category, prompt: secret.final.prompt ?? theFinal()?.prompt,
+      options: secret.final.options, wagers, picture: publicPicture(secret.final.picture),
+    },
     current: { round: `g${room.game}f`, seconds: FINAL_SECONDS, startedAt: serverTimestamp() },
   });
 }
@@ -559,18 +628,20 @@ function tiedLeaders() {
 
 async function startTiebreak() {
   const uids = tiedLeaders();
-  if (uids.length < 2 || !BANK.tiebreaker) return;
   const n = (room.tiebreak?.n || 0) + 1;
+  const tq = tiebreakerFor(n);
+  if (uids.length < 2 || !tq) return;
   await updateDoc(roomRef, {
     status: "tiebreak",
-    tiebreak: { n, round: `g${room.game}t${n}`, prompt: BANK.tiebreaker.prompt, uids, seconds: TIEBREAK_SECONDS, startedAt: serverTimestamp() },
+    tiebreak: { n, round: `g${room.game}t${n}`, prompt: tq.prompt, uids, seconds: TIEBREAK_SECONDS, startedAt: serverTimestamp() },
   });
 }
 
 async function closeTiebreak() {
   if (room.status !== "tiebreak") return;
   const tb = room.tiebreak;
-  const target = BANK.tiebreaker.answer;
+  if (!secret) secret = (await getDoc(privRef)).data() || null;
+  const target = Number(tiebreakerFor(tb.n || 1)?.answer);
   const entries = tb.uids.map((uid) => {
     const a = answers.get(uid);
     const ok = a && a.round === tb.round && Number.isFinite(a.value);
@@ -597,6 +668,7 @@ function render() {
   const r = plain(room);
   const ps = displayScores(playerList().map((p) => ({
     id: p.id, name: p.name || "Trainer", score: p.score || 0, team: p.team || null, photo: p.photo || "", doubleNext: !!p.doubleNext,
+    away: !!p.away,
   })), r);
   const key = JSON.stringify({ r, ps });
   if (key === lastKey) return patchCounts();
@@ -621,6 +693,65 @@ function valueCard(category, value, still = false) {
 }
 
 const btn = (label, onclick, cls = "btn-primary") => h("button", { class: `btn ${cls} btn-inline`, type: "button", onclick }, label);
+
+// ----- Managing players during a game -----
+let playersModal = null;
+
+function playersButton() {
+  const away = playerList().filter((p) => p.away).length;
+  return h("button", { class: "btn-link", type: "button", onclick: openPlayers },
+    `Players (${players.size}${away ? `, ${away} away` : ""})`);
+}
+
+function openPlayers() {
+  closePlayers();
+  playersModal = h("div", {
+    class: "modal-backdrop",
+    onclick: (e) => { if (e.target === playersModal) closePlayers(); },
+  });
+  document.body.append(playersModal);
+  renderPlayersModal();
+}
+
+function closePlayers() {
+  playersModal?.remove();
+  playersModal = null;
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePlayers(); });
+
+function renderPlayersModal() {
+  if (!playersModal) return;
+  const list = rankPlayers(playerList().map((p) => ({ ...p, name: p.name || "Trainer", score: p.score || 0 })));
+  playersModal.replaceChildren(h("div", { class: "modal panel", role: "dialog", "aria-modal": "true", "aria-label": "Players" },
+    h("div", { class: "modal-head" },
+      h("h2", null, `Players (${list.length})`),
+      h("button", { class: "btn btn-ghost btn-inline", type: "button", onclick: closePlayers }, "Close")),
+    h("p", { class: "muted small" },
+      `Players who miss ${AWAY_AFTER} questions in a row are marked away: the game stops waiting for them and skips their turn to pick. Answering a question brings them back. Removing someone takes them out of the game and their points are lost.`),
+    list.length ? h("ul", { class: "manage-list" }, list.map((p) => h("li", { class: p.away ? "away" : null },
+      avatar(p),
+      h("span", { class: "name" }, p.name),
+      p.away ? badge("clock", "Away", "badge-away") : h("span", { class: "muted small" }, p.missed ? `Missed ${p.missed}` : "Playing"),
+      h("span", { class: "score" }, p.score.toLocaleString()),
+      h("button", { class: "btn btn-ghost btn-inline btn-sm", type: "button", onclick: () => removePlayer(p) }, "Remove"))))
+      : h("p", { class: "muted" }, "No players in the room.")));
+}
+
+async function removePlayer(p) {
+  if (!confirm(`Remove ${p.name} from the game? Their points are lost.`)) return;
+  try {
+    await deleteDoc(playerRef(p.id));
+    toast(`${p.name} was removed.`);
+  } catch (e) {
+    console.error(e);
+    toast(`Couldn’t remove ${p.name}. Try again.`);
+  }
+}
+
+/** Host controls shown along the bottom during a game. */
+function hostTools() {
+  return h("span", { class: "host-tools" }, playersButton(), endGameButton());
+}
 
 function endGameButton() {
   return h("button", {
@@ -731,7 +862,7 @@ function lobbyView(r, ps) {
       h("section", { class: "panel" },
         h("h3", null, icon("users"), `Players (${ps.length})`),
         ps.length ? h("div", { class: "roster-scroll" }, roster) : h("p", { class: "muted" }, "Waiting for players to join…"),
-        h("button", { class: "btn btn-primary btn-lg", type: "button", disabled: !ps.length, onclick: () => transition(startGame) }, "Start game")),
+        h("button", { class: "btn btn-primary btn-lg", type: "button", disabled: !ps.length || starting, onclick: () => transition(startGame) }, starting ? "Shuffling cards..." : "Start game")),
       settings));
 }
 
@@ -744,7 +875,7 @@ function boardView(r, ps) {
     boardGrid(r.categories, r.board, (cellId) => transition(() => pickCell(cellId))),
     h("div", { class: "host-footer" },
       h("span", { class: "muted small" }, "Click a card to pick on someone’s behalf."),
-      endGameButton()));
+      hostTools()));
 }
 
 // ----- Question (board + final) -----
@@ -768,6 +899,7 @@ function questionView(r, ps) {
       optionGrid(isFinal ? r.final.options : c.options)),
     h("div", { class: "host-footer" },
       h("span", { id: "answer-count", class: "muted" }),
+      playersButton(),
       btn("Reveal now", closeCurrent, "btn-ghost")));
 }
 
@@ -852,8 +984,8 @@ function leaderboardScreen(r, ps) {
     })),
     h("div", { class: "host-footer" },
       h("span", { class: "muted" }, left ? `${left} card${left === 1 ? "" : "s"} left on the board` : "Board cleared!"),
-      endGameButton(),
-      btn(left ? "Next turn" : BANK.final ? "Final round" : "Final standings", () => transition(next))));
+      hostTools(),
+      btn(left ? "Next turn" : hasFinal() ? "Final round" : "Final standings", () => transition(next))));
 }
 
 // ----- Wildcards -----
@@ -978,7 +1110,7 @@ function podiumView(r, ps) {
       h("div", { class: "podium-block" }, ordinal(p.rank))))),
     ranked.length > 3 ? h("section", { class: "panel" }, leaderboardView(ps, { showTeams: tm, from: 3, limit: 8, twoCol: true, twoColAfter: 2 })) : null,
     h("div", { class: "host-footer" },
-      tied && BANK.tiebreaker ? btn("Play the tiebreaker", () => transition(startTiebreak)) : h("span"),
+      tied && tiebreakersOf(BANK).length ? btn("Play the tiebreaker", () => transition(startTiebreak)) : h("span"),
       btn("Play again", () => transition(() => updateDoc(roomRef, { status: "lobby" })), tied ? "btn-ghost" : "btn-primary")));
 }
 

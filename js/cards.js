@@ -36,6 +36,15 @@ async function lookup(spec) {
   return null;
 }
 
+/** Cached GET of any TCGdex path, e.g. api("/sets/swsh7"). Resolves to null on failure. */
+const apiCache = new Map();
+export function api(path) {
+  if (!apiCache.has(path)) apiCache.set(path, getJSON(API + path).catch(() => null));
+  return apiCache.get(path);
+}
+
+export const isPocket = (id) => POCKET.test(String(id || ""));
+
 /** Finds a picture for a question's `card` spec. Resolves to { base, name } or null; never throws. */
 export function findCard(spec) {
   if (!spec || (!spec.id && !spec.name)) return Promise.resolve(null);

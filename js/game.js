@@ -15,6 +15,7 @@ export const SPEED_BONUS = 0.25;   // answering instantly adds up to +25% of the
 export const PICKER_BONUS = 0.25;  // the player who picked the card gets +25% if they're right
 export const FINAL_SECONDS = 30;
 export const FINAL_MIN_WAGER = 500; // everyone may wager at least this much, even with a low score
+export const AWAY_AFTER = 2;          // missed questions in a row before a player is marked away
 export const ANSWER_GRACE_MS = 1500; // extra time the host waits for answers still on their way
 export const TIEBREAK_SECONDS = 30;
 export const STEAL_AMOUNT = 200;
@@ -78,8 +79,34 @@ export function makeRoomCode() {
  * public: [{ id, col, row, used, label }]
  * cells:  { [id]: { col, kind: "q", qIndex, points } | { col, kind: "wild", wild } }
  */
+// ---------- Difficulty ----------
+// Every question has a level; its points are level x 100.
+//   1 = 100 very easy, 2 = 200 easy, 3 = 300 medium, 4 = 400 hard, 5 = 500 very hard
+export const LEVELS = [1, 2, 3, 4, 5];
+export const pointsFor = (level) => level * 100;
+// The board is 7 columns: up to 5 hand-written categories from questions.js, plus the
+// "Card Spotter" and "Price Check" columns generated from the card database each game.
+// With more than 5 categories in the bank, the extras sit out a game in rotation.
+export const HAND_COLUMNS = 5;
+export const GENERATED_COLUMNS = 2;
+
+/** Cards on the board: one per level in every column. */
 export function boardSize(bank) {
-  return bank.categories.reduce((n, c) => n + c.questions.length, 0);
+  return (Math.min(bank.categories.length, HAND_COLUMNS) + GENERATED_COLUMNS) * LEVELS.length;
+}
+
+/**
+ * Picks which hand-written categories play this game. When there are more than
+ * HAND_COLUMNS, the ones that sat out longest ago (or never) sit out next.
+ * recent: names that sat out before, most recent last. Returns { play, satOut } in bank order.
+ */
+export function chooseCategories(categories, recent = []) {
+  const extra = Math.max(0, categories.length - HAND_COLUMNS);
+  if (!extra) return { play: categories, satOut: [] };
+  const age = (c) => { const i = recent.lastIndexOf(c.name); return i < 0 ? -1 : i; };
+  const order = shuffle([...categories]).sort((a, b) => age(a) - age(b));
+  const out = new Set(order.slice(0, extra));
+  return { play: categories.filter((c) => !out.has(c)), satOut: [...out].map((c) => c.name) };
 }
 
 /** Wildcard count from settings (older rooms used an on/off switch). */
@@ -94,48 +121,70 @@ export function enabledWildTypes(settings) {
   return picked.length ? picked : all;
 }
 
-/** n point values spread evenly over POINT_VALUES, in random order. */
-function spreadPoints(n) {
-  const out = [];
-  while (out.length < n) out.push(...shuffle(POINT_VALUES));
-  return shuffle(out.slice(0, n));
+/**
+ * This game's questions: one per level in each category, picked at random among the
+ * questions written for that level. If a level has none, the closest level fills in.
+ */
+export function pickDeck(categories) {
+  return categories.map((cat) => {
+    const used = new Set();
+    const questions = LEVELS.map((level) => {
+      const free = cat.questions.filter((q) => !used.has(q));
+      const best = Math.min(...free.map((q) => Math.abs((q.level || 3) - level)));
+      const pool = free.filter((q) => Math.abs((q.level || 3) - level) === best);
+      const q = pool[Math.floor(Math.random() * pool.length)];
+      if (q) used.add(q);
+      return q ? { ...q, level } : null;
+    }).filter(Boolean);
+    return { name: cat.name, note: cat.note || null, questions };
+  });
 }
 
-export function buildBoard(bank, settings) {
-  const total = boardSize(bank);
-  const wildCount = wildcardCountOf(settings, bank);
+/**
+ * Lays out this game's deck: one column per category, 100 at the top to 500 at the bottom.
+ * public board: [{ id, col, row, value, used, label, icon }] (values are visible, wildcards aren't)
+ * cells (hidden): { [id]: { col, kind: "q", q, points, wild } }
+ */
+export function buildBoard(deck, settings) {
+  const total = deck.reduce((n, c) => n + c.questions.length, 0);
+  const wildCount = Math.min(total, wildcardCountOf(settings, { categories: deck }));
   const types = enabledWildTypes(settings);
   const cells = {};
   const board = [];
 
   // Every card is a question. Some cards also carry a wildcard, which plays first.
   // Spread the wildcards across the columns as evenly as possible.
-  const perCol = bank.categories.map(() => 0);
-  const order = shuffle(bank.categories.map((_, i) => i));
+  const perCol = deck.map(() => 0);
+  const order = shuffle(deck.map((_, i) => i));
   for (let placed = 0, k = 0; placed < wildCount && k < total * 2; k++) {
     const col = order[k % order.length];
-    if (perCol[col] < bank.categories[col].questions.length) { perCol[col]++; placed++; }
+    if (perCol[col] < deck[col].questions.length) { perCol[col]++; placed++; }
   }
   // Cycle through the enabled wildcard types so the board gets a good mix.
   let typeBag = [];
   const nextType = () => { if (!typeBag.length) typeBag = shuffle(types); return typeBag.pop(); };
 
-  bank.categories.forEach((cat, col) => {
+  deck.forEach((cat, col) => {
     const size = cat.questions.length;
     const wildRows = new Set(shuffle([...Array(size).keys()]).slice(0, perCol[col]));
-    const points = spreadPoints(size);
-    for (let row = 0; row < size; row++) {
+    cat.questions.forEach((q, row) => {
       const id = `c${col}r${row}`;
-      cells[id] = { col, kind: "q", qIndex: row, points: points[row], wild: wildRows.has(row) ? nextType() : null };
-      board.push({ id, col, row, used: false, label: null, icon: null });
-    }
+      const points = pointsFor(q.level);
+      cells[id] = { col, kind: "q", q, points, wild: wildRows.has(row) ? nextType() : null };
+      board.push({ id, col, row, value: points, used: false, label: null, icon: null });
+    });
   });
 
-  return { categories: bank.categories.map((c) => c.name), board, cells };
+  return { categories: deck.map((c) => c.name), notes: deck.map((c) => c.note || null), board, cells };
 }
 
+/** Final-round and tiebreaker pools (older banks had a single `final` / `tiebreaker`). */
+export const finalsOf = (bank) => (Array.isArray(bank.finals) && bank.finals.length ? bank.finals : bank.final ? [bank.final] : []);
+export const tiebreakersOf = (bank) => (Array.isArray(bank.tiebreakers) && bank.tiebreakers.length ? bank.tiebreakers : bank.tiebreaker ? [bank.tiebreaker] : []);
+
 export function optionsFor(q) {
-  const options = shuffle([q.answer, ...q.wrong]);
+  // Questions can fix the answer order (price answers read lowest to highest).
+  const options = Array.isArray(q.inOrder) && q.inOrder.includes(q.answer) ? [...q.inOrder] : shuffle([q.answer, ...q.wrong]);
   return { options, correctIndex: options.indexOf(q.answer) };
 }
 
